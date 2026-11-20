@@ -179,6 +179,26 @@ io.Copy(out, audioprofile.Compressor(in, 44100, 2, audioprofile.CompressorSettin
 - Le gain est calculé en dB (genou quadratique), puis lissé : attaque quand la réduction augmente, relâchement quand elle diminue.
 - Sans effet (flux renvoyé tel quel) si `Ratio <= 1` et `MakeupDB = 0`.
 
+### Limiteur
+
+```go
+type LimiterSettings struct {
+	CeilingDB   float64 // plafond des crêtes en dBFS, dans [-40, 0] (0 = pleine échelle)
+	LookaheadMs float64 // anticipation en ms, dans [0,1 ; 50] ; <= 0 → 5
+	ReleaseMs   float64 // relâchement en ms ; <= 0 → 100
+}
+
+func Limiter(src io.Reader, sampleRate, channels int, s LimiterSettings) io.Reader
+```
+
+Limiteur de crête **à anticipation** : aucune crête d'échantillon ne dépasse `CeilingDB`. Le gain nécessaire pour chaque trame est calculé `LookaheadMs` plus tôt et la réduction est étalée en rampe sur cette durée, de sorte qu'elle est déjà complète quand le pic arrive. Le compresseur, lui, laisse passer un pic bref pendant son temps d'attaque ; le limiteur ne le laisse jamais passer, et sans la distorsion d'un écrêtage.
+
+- **Aucune latence visible** : le signal est retardé de l'anticipation en interne, mais la sortie est recalée : même longueur et même alignement que l'entrée (le tampon est vidé en fin de flux).
+- **Transparent sous le plafond** : tant qu'aucune crête ne dépasse, le signal ressort **bit à bit identique**.
+- Détection liée : le même gain pour tous les canaux.
+- Le plafond porte sur les valeurs d'échantillons, pas sur les crêtes inter-échantillons (*true peak*) : un convertisseur en aval peut en reconstruire qui dépassent de 1 à 2 dB. Prenez `-1` dBFS pour avoir de la marge.
+- Dans une chaîne de profil, le limiteur remplace le plafond doux : il est le dernier étage.
+
 ### Compresseur multibande
 
 ```go
@@ -372,6 +392,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire, asymétrique avec biais), harmoniques impaires seulement à biais nul et paires avec biais, composante continue retirée, silence exact, réduction du repliement (≥ 20 dB), plafond doux (jamais ±32767 après arrondi), états par canal sans diaphonie, seuls les profils asymétriques (Jazz, Tube) produisent des harmoniques paires, gain des petits signaux qui croît avec le drive malgré le biais (régression), croissance avec l'intensité, niveau de Rock |
 | `tubeamp_presets_test.go` | noms et `ParseTubeAmpPreset`, `Settings()` copie, `Scaled` (0, 1, 2, plafonds, gain de sortie positif), intensité nulle, niveau proche de l'entrée, distorsion croissante de Clean à Lead, aucun écrêtage jusqu'à l'intensité 3 avec ou sans baffle, silence et lecture fragmentée |
 | `tubeamp_test.go` | identité sans réglage, polarité conservée de 1 à 4 étages, harmoniques paires sans composante continue, correcteur de timbre (±6 dB), baffle (aigus, très graves, présence, résonance), pic des filtres finaux à 0 dB, basse fréquence d'échantillonnage, gain de sortie, silence exact, états par canal et lecture fragmentée, aucun écrêtage même à fond |
+| `limiter_test.go` | signal sous le plafond bit à bit identique (mono et stéréo), alignement d'une impulsion et longueur (entrées de 1 à 1000 trames, vide), aucune crête au-dessus du plafond (sinus à pleine échelle dès le début, salve soudaine, bruit blanc, de 0 à −20 dB), anticipation (réduction avant la salve, retour au niveau après relâchement), rampe progressive et non une marche (échelon continu — un test de mutation sans la rampe le fait échouer), détection liée, lecture octet par octet / données + EOF / octets en trop, silence exact, réglages invalides, pas de dérive sur 3 × 65 536 trames |
 | `multiband_test.go` | somme des bandes plate à ±0,1 dB (4 bandes, de 20 Hz à 18 kHz, séparations comprises — un test de mutation sans la compensation passe-tout le fait échouer), bandes indépendantes (aigus intacts quand seules les basses sont compressées, contre −20 dB en large bande), compensation par bande, réglages invalides = identité, détection liée et canal silencieux exactement silencieux, longueur conservée, lecture fragmentée identique, mise à l'échelle par l'intensité |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
@@ -383,7 +404,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 - Les préréglages `BassBoost`, `MidBoost` et `TrebleBoost` ont leurs fréquences et leur gain maximal fixés dans le code (constantes `cutoffHz`, `midCenterHz`, `midQ`, `trebleCutoffHz` et `maxGainDB`) ; utiliser `Equalizer` pour les régler.
 - Au-delà de l'intensité 1, le volume baisse et le niveau n'est plus calibré sur l'entrée ; un signal à pleine échelle (0 dBFS) peut écrêter plus largement qu'à l'intensité 1 (Pop, Vocal).
 - Les réglages des profils n'ont pas été validés à l'oreille : ils sont vérifiés par mesure (forme des courbes, niveaux) mais restent des points de départ à affiner.
-- Le compresseur n'a pas d'anticipation (look-ahead) et il n'y a pas de limiteur : un pic très bref passe pendant le temps d'attaque. Un signal à pleine échelle (0 dBFS) dès son premier échantillon peut ainsi écrêter brièvement (Pop, Vocal) ; à −3 dBFS, aucun profil n'écrête. En dehors des profils, un fort gain d'égalisation sur un signal déjà proche de la saturation est écrêté (distorsion).
+- Le compresseur n'a pas d'anticipation : un pic très bref passe pendant le temps d'attaque. Seul le [`Limiter`](#limiteur) garantit un plafond. Un signal à pleine échelle (0 dBFS) dès son premier échantillon peut donc écrêter brièvement avec un profil sans limiteur (Pop, Vocal) ; à −3 dBFS, aucun profil n'écrête. En dehors des profils, un fort gain d'égalisation sur un signal déjà proche de la saturation est écrêté (distorsion).
 - Les profils et préréglages avec saturation sont calibrés à −18 dBFS : sur un master très fort, la saturation compresse les passages forts et le volume baisse (jusqu'à −6 dB mesuré sur un morceau à RMS −9,7 dBFS).
 - Le suréchantillonnage de la saturation réduit fortement le repliement de spectre mais ne l'élimine pas (−25 dB mesuré sur un cas poussé), et ses filtres arrondissent un peu les aigus extrêmes des profils saturés.
 - Le dosage de la saturation dépend de la fréquence : le gain automatique compense le drive là où l'égalisation est inférieure à son pic, donc le grain s'entend surtout dans les basses.

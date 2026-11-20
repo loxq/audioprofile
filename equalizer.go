@@ -49,7 +49,7 @@ func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader 
 
 // chain décrit la chaîne de traitement d'un lecteur, dans l'ordre :
 // égalisation → compresseur → compresseur multibande → saturation (+ gain de
-// sortie) → filtres finaux → élargisseur stéréo.
+// sortie) → filtres finaux → élargisseur stéréo → limiteur.
 type chain struct {
 	bands  []Band              // égalisation
 	comp   *CompressorSettings // compresseur (nil = aucun)
@@ -57,6 +57,7 @@ type chain struct {
 	sat    *saturation         // saturation (nil = aucune)
 	post   []coeffs            // filtres appliqués après la saturation (timbre, baffle…)
 	stereo *stereoSettings     // élargisseur stéréo (nil = aucun)
+	limit  *LimiterSettings    // limiteur de crête, dernier étage (nil = aucun)
 }
 
 // newEqualizerReader est Equalizer avec, en option, un compresseur puis une
@@ -84,13 +85,15 @@ func newChainReader(src io.Reader, sampleRate, channels int, c chain) io.Reader 
 	}
 	var wid *widener
 	var mb *multiband
+	var lim *limiter
 	if sampleRate > 0 {
+		lim = newLimiter(float64(sampleRate), channels, c.limit)
 		wid = newWidener(float64(sampleRate), channels, c.stereo)
 		mb = newMultiband(float64(sampleRate), channels, c.multi)
 	}
 	r := &reader{
-		src: src, channels: channels, sat: sats, comp: cmp, multi: mb, wid: wid,
-		passthru: len(coefs) == 0 && sats == nil && cmp == nil && mb == nil && len(post) == 0 && wid == nil,
+		src: src, channels: channels, sat: sats, comp: cmp, multi: mb, wid: wid, lim: lim,
+		passthru: len(coefs) == 0 && sats == nil && cmp == nil && mb == nil && len(post) == 0 && wid == nil && lim == nil,
 		frame:    make([]float64, channels),
 	}
 	if !r.passthru {
@@ -161,6 +164,7 @@ type reader struct {
 	sat      []*saturator // saturation + gain de sortie, un par canal, après le compresseur (peut être nil)
 	post     [][]biquad   // post[canal][filtre] : filtres appliqués après la saturation
 	wid      *widener     // élargisseur stéréo, après les filtres finaux (peut être nil)
+	lim      *limiter     // limiteur à anticipation, dernier étage (peut être nil)
 	frame    []float64    // tampon de travail : une trame (un échantillon par canal)
 	passthru bool
 
@@ -194,59 +198,95 @@ func (r *reader) fill() {
 	r.out = r.process(buf[:usable])
 
 	if err != nil {
+		// le limiteur retarde le signal : on vide son tampon pour que la sortie
+		// ait la même longueur que l'entrée
+		r.out = append(r.out, r.flush()...)
 		r.err = err // une éventuelle trame incomplète finale est ignorée
 	}
 }
 
+// process traite les trames complètes de b. La sortie est écrite sur place
+// dans b : elle n'a jamais plus de trames que l'entrée déjà lue, et en a moins
+// tant que le limiteur remplit son retard.
 func (r *reader) process(b []byte) []byte {
 	if r.passthru {
 		return b
 	}
 	step := r.channels * bytesPerSm
+	out := b[:0]
 	for i := 0; i+step <= len(b); i += step {
 		for ch := 0; ch < r.channels; ch++ {
 			j := i + ch*bytesPerSm
-			y := float64(int16(uint16(b[j]) | uint16(b[j+1])<<8))
-			for k := range r.filters[ch] {
-				y = r.filters[ch][k].process(y)
-			}
-			r.frame[ch] = y
+			r.frame[ch] = float64(int16(uint16(b[j]) | uint16(b[j+1])<<8))
 		}
-		if r.comp != nil {
-			r.comp.apply(r.frame)
+		out = r.run(out)
+	}
+	return out
+}
+
+// flush vide le retard du limiteur en lui faisant traverser du silence.
+func (r *reader) flush() []byte {
+	if r.passthru || r.lim == nil {
+		return nil
+	}
+	var out []byte
+	for i := 0; i < r.lim.delay; i++ {
+		for ch := range r.frame {
+			r.frame[ch] = 0
 		}
-		if r.multi != nil {
-			r.multi.apply(r.frame)
+		out = r.run(out)
+	}
+	return out
+}
+
+// run fait traverser toute la chaîne à la trame de r.frame (valeurs int16 brutes)
+// et ajoute la trame obtenue à out, sauf si le limiteur n'a pas encore de sortie.
+func (r *reader) run(out []byte) []byte {
+	for ch := 0; ch < r.channels; ch++ {
+		y := r.frame[ch]
+		for k := range r.filters[ch] {
+			y = r.filters[ch][k].process(y)
 		}
-		for ch := 0; ch < r.channels; ch++ {
-			y := r.frame[ch]
-			if r.sat != nil {
-				y = r.sat[ch].apply(y)
-			}
-			for k := range r.post[ch] {
-				y = r.post[ch][k].process(y)
-			}
-			r.frame[ch] = y
+		r.frame[ch] = y
+	}
+	if r.comp != nil {
+		r.comp.apply(r.frame)
+	}
+	if r.multi != nil {
+		r.multi.apply(r.frame)
+	}
+	for ch := 0; ch < r.channels; ch++ {
+		y := r.frame[ch]
+		if r.sat != nil {
+			y = r.sat[ch].apply(y)
 		}
-		if r.wid != nil {
-			r.wid.apply(r.frame)
+		for k := range r.post[ch] {
+			y = r.post[ch][k].process(y)
 		}
-		for ch := 0; ch < r.channels; ch++ {
-			y := r.frame[ch]
-			if len(r.post[ch]) > 0 || r.wid != nil {
-				// les filtres finaux déphasent l'onde saturée et l'élargissement additionne
-				// le côté au milieu : les pics peuvent dépasser la pleine échelle même avec
-				// un gain de 0 dB au maximum
-				y = 32768 * softCeilingAt(y/32768, postCeilingKnee)
-			}
-			// écrêtage pour éviter le débordement d'entier
-			y = math.Max(-32768, math.Min(32767, math.Round(y)))
-			v := uint16(int16(y))
-			j := i + ch*bytesPerSm
-			b[j], b[j+1] = byte(v), byte(v>>8)
+		r.frame[ch] = y
+	}
+	if r.wid != nil {
+		r.wid.apply(r.frame)
+	}
+	if r.lim != nil {
+		if !r.lim.apply(r.frame) {
+			return out
 		}
 	}
-	return b
+	for ch := 0; ch < r.channels; ch++ {
+		y := r.frame[ch]
+		if r.lim == nil && (len(r.post[ch]) > 0 || r.wid != nil) {
+			// les filtres finaux déphasent l'onde saturée et l'élargissement additionne
+			// le côté au milieu : les pics peuvent dépasser la pleine échelle même avec
+			// un gain de 0 dB au maximum (le limiteur, lui, garantit son plafond)
+			y = 32768 * softCeilingAt(y/32768, postCeilingKnee)
+		}
+		// écrêtage pour éviter le débordement d'entier
+		y = math.Max(-32768, math.Min(32767, math.Round(y)))
+		v := uint16(int16(y))
+		out = append(out, byte(v), byte(v>>8))
+	}
+	return out
 }
 
 // ---------------------------------------------------------------- biquad
