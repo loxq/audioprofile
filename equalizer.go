@@ -42,6 +42,12 @@ type Band struct {
 // Les bandes sans effet (gain nul, ou fréquence <= 0 ou >= Nyquist hors type Gain) sont ignorées.
 // S'il n'en reste aucune, ou si sampleRate <= 0, le flux est renvoyé tel quel.
 func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader {
+	return newEqualizerReader(src, sampleRate, channels, bands, nil)
+}
+
+// newEqualizerReader est Equalizer avec, en option, un étage de saturation
+// appliqué après les filtres.
+func newEqualizerReader(src io.Reader, sampleRate, channels int, bands []Band, sat *saturator) io.Reader {
 	if channels < 1 {
 		channels = 1
 	}
@@ -50,7 +56,7 @@ func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader 
 		coefs = designBands(float64(sampleRate), bands)
 	}
 
-	r := &reader{src: src, channels: channels, passthru: len(coefs) == 0}
+	r := &reader{src: src, channels: channels, passthru: len(coefs) == 0 && sat == nil, sat: sat}
 	if !r.passthru {
 		r.filters = make([][]biquad, channels)
 		for ch := range r.filters {
@@ -109,6 +115,7 @@ type reader struct {
 	src      io.Reader
 	channels int
 	filters  [][]biquad // filters[canal][bande]
+	sat      *saturator // saturation + gain de sortie, après les filtres (peut être nil)
 	passthru bool
 
 	pending []byte // octets lus mais ne formant pas encore une trame complète
@@ -154,6 +161,9 @@ func (r *reader) process(b []byte) []byte {
 		y := float64(int16(uint16(b[i]) | uint16(b[i+1])<<8))
 		for j := range r.filters[ch] {
 			y = r.filters[ch][j].process(y)
+		}
+		if r.sat != nil {
+			y = r.sat.apply(y)
 		}
 		// écrêtage pour éviter le débordement d'entier
 		y = math.Max(-32768, math.Min(32767, math.Round(y)))

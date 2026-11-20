@@ -97,8 +97,13 @@ func TestProfileShape(t *testing.T) {
 	if !(bm(HipHop) > bm(Classical)*1.5) {
 		t.Errorf("HipHop doit avoir bien plus de basses relatives que Classical (%.2f vs %.2f)", bm(HipHop), bm(Classical))
 	}
-	// Pas d'écrêtage sur un signal fort : le pic ne dépasse jamais l'entrée de plus de ~0,1 dB
+	// Sans saturation, un profil ne rend jamais plus fort que l'entrée (pic à 0 dB).
+	// Les profils saturés (Rock) relèvent volontairement les signaux faibles :
+	// leur absence d'écrêtage est vérifiée dans saturation_test.go.
 	for _, p := range Profiles() {
+		if profileSaturation[p].driveDB != 0 || profileSaturation[p].outputDB != 0 {
+			continue
+		}
 		for _, f := range []float64{40, 100, 400, 1000, 3000, 8000, 15000} {
 			if r := ratio(p, f); r > 1.02 {
 				t.Errorf("%v à %.0f Hz : ratio %.3f > 1", p, f, r)

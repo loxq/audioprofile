@@ -80,6 +80,14 @@ var profileBands = [numProfiles][]Band{
 	},
 }
 
+// profileSaturation donne, pour les profils qui en ont, la saturation douce et
+// le gain de sortie appliqués après l'égalisation, à intensité 1.
+// driveDB : gain poussé dans la saturation (plus c'est haut, plus le grain est marqué) ;
+// outputDB : gain de sortie final, pour régler le niveau après saturation.
+var profileSaturation = [numProfiles]struct{ driveDB, outputDB float64 }{
+	Rock: {driveDB: 6, outputDB: -1},
+}
+
 // Profiles renvoie tous les profils disponibles.
 func Profiles() []Profile {
 	ps := make([]Profile, numProfiles)
@@ -123,6 +131,9 @@ func (p Profile) Bands() []Band {
 // intensity met la courbe à l'échelle : 0 = aucun effet, 1 = profil complet
 // (valeurs ramenées dans [0, 1]).
 //
+// Certains profils (Rock) ajoutent aussi une saturation douce suivie d'un
+// gain de sortie : leur dosage suit l'intensité (0 = aucun effet).
+//
 // Pour éviter l'écrêtage, un gain global négatif est ajouté automatiquement :
 // il ramène à 0 dB la fréquence la plus renforcée par le profil. Le volume
 // perçu baisse donc d'autant ; compensez-le au besoin en aval.
@@ -138,7 +149,9 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 	if peak := peakResponseDB(float64(sampleRate), designBands(float64(sampleRate), bands)); peak > 0 {
 		bands = append(bands, Band{Type: Gain, GainDB: -peak})
 	}
-	return Equalizer(src, sampleRate, channels, bands)
+	sat := profileSaturation[p]
+	return newEqualizerReader(src, sampleRate, channels, bands,
+		newSaturator(sat.driveDB*intensity, sat.outputDB*intensity))
 }
 
 // peakResponseDB renvoie le gain maximal (en dB) de la chaîne de filtres,
