@@ -40,7 +40,7 @@ import (
 	"io"
 	"os"
 
-	"poc-audio-profiles"
+	bassboost "github.com/loxq/audioprofile"
 )
 
 func main() {
@@ -55,7 +55,7 @@ func main() {
 }
 ```
 
-L'import réel dépend du chemin du module (voir `go.mod`) : le paquet s'appelle `bassboost`.
+Le chemin du module est `github.com/loxq/audioprofile` mais le paquet s'appelle `bassboost` : l'alias `bassboost` à l'import rend cela explicite.
 
 ### Signatures
 

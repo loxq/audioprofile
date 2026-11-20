@@ -15,7 +15,7 @@ import (
 	"os"
 	"strings"
 
-	bassboost "poc-audio-profiles"
+	bassboost "github.com/loxq/audioprofile"
 )
 
 func main() {
