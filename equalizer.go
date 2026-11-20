@@ -20,6 +20,7 @@ const (
 	LowShelf  BandType = iota // renforce/atténue tout ce qui est sous FreqHz
 	Peaking                   // cloche centrée sur FreqHz
 	HighShelf                 // renforce/atténue tout ce qui est au-dessus de FreqHz
+	Gain                      // gain global sur tout le spectre (FreqHz et Q ignorés)
 )
 
 // Band décrit une bande d'un égaliseur paramétrique.
@@ -38,7 +39,7 @@ type Band struct {
 //   - channels   : nombre de canaux (1 = mono, 2 = stéréo...)
 //   - bands      : bandes à appliquer
 //
-// Les bandes sans effet (gain nul, fréquence <= 0 ou >= Nyquist) sont ignorées.
+// Les bandes sans effet (gain nul, ou fréquence <= 0 ou >= Nyquist hors type Gain) sont ignorées.
 // S'il n'en reste aucune, ou si sampleRate <= 0, le flux est renvoyé tel quel.
 func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader {
 	if channels < 1 {
@@ -46,26 +47,7 @@ func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader 
 	}
 	var coefs []coeffs
 	if sampleRate > 0 {
-		fs := float64(sampleRate)
-		for _, b := range bands {
-			if b.GainDB == 0 || math.IsNaN(b.GainDB) || b.FreqHz <= 0 || b.FreqHz >= fs/2 {
-				continue
-			}
-			gain := math.Max(-maxBandDB, math.Min(maxBandDB, b.GainDB))
-			q := b.Q
-			if q <= 0 {
-				q = defaultQ
-			}
-			q = math.Max(minQ, q)
-			switch b.Type {
-			case LowShelf:
-				coefs = append(coefs, lowShelf(fs, b.FreqHz, gain, q))
-			case Peaking:
-				coefs = append(coefs, peaking(fs, b.FreqHz, gain, q))
-			case HighShelf:
-				coefs = append(coefs, highShelf(fs, b.FreqHz, gain, q))
-			}
-		}
+		coefs = designBands(float64(sampleRate), bands)
 	}
 
 	r := &reader{src: src, channels: channels, passthru: len(coefs) == 0}
@@ -79,6 +61,38 @@ func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader 
 		}
 	}
 	return r
+}
+
+// designBands calcule les coefficients des bandes utiles (ignore les autres).
+func designBands(fs float64, bands []Band) []coeffs {
+	var coefs []coeffs
+	for _, b := range bands {
+		if b.GainDB == 0 || math.IsNaN(b.GainDB) {
+			continue
+		}
+		gain := math.Max(-maxBandDB, math.Min(maxBandDB, b.GainDB))
+		if b.Type == Gain {
+			coefs = append(coefs, coeffs{b0: math.Pow(10, gain/20)})
+			continue
+		}
+		if b.FreqHz <= 0 || b.FreqHz >= fs/2 {
+			continue
+		}
+		q := b.Q
+		if q <= 0 {
+			q = defaultQ
+		}
+		q = math.Max(minQ, q)
+		switch b.Type {
+		case LowShelf:
+			coefs = append(coefs, lowShelf(fs, b.FreqHz, gain, q))
+		case Peaking:
+			coefs = append(coefs, peaking(fs, b.FreqHz, gain, q))
+		case HighShelf:
+			coefs = append(coefs, highShelf(fs, b.FreqHz, gain, q))
+		}
+	}
+	return coefs
 }
 
 // singleBand applique une seule bande dont le gain vaut intensity × maxGainDB,

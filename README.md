@@ -8,6 +8,7 @@ Le paquet `bassboost` expose trois fonctions qui enveloppent un `io.Reader` PCM 
 - `MidBoost` : renforce ou atténue les **fréquences intermédiaires** (médiums) ;
 - `TrebleBoost` : renforce ou atténue les **aigus**.
 
+- `ApplyProfile` : applique un **profil prédéfini** (Rock, Pop, Classique, Jazz…) avec une intensité réglable ;
 - `Equalizer` : **égaliseur paramétrique** à bandes libres (type, fréquence, gain en dB, Q), appliquées en une seule passe.
 
 `BassBoost`, `MidBoost` et `TrebleBoost` sont des préréglages à une bande, réglés par une simple intensité. Toutes ces fonctions sont chaînables : `TrebleBoost(MidBoost(BassBoost(src, ...), ...), ...)`. Pour plusieurs bandes, `Equalizer` est plus efficace (une seule boucle sur les échantillons).
@@ -103,6 +104,33 @@ io.Copy(out, bassboost.Equalizer(in, 44100, 2, rock))
 - Les bandes sans effet (gain nul ou NaN, fréquence <= 0 ou >= Nyquist) sont ignorées. S'il n'en reste aucune, le flux est renvoyé tel quel.
 - Les bandes sont appliquées dans l'ordre, en série.
 
+### Profils prédéfinis
+
+```go
+func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity float64) io.Reader
+```
+
+```go
+io.Copy(out, bassboost.ApplyProfile(in, 44100, 2, bassboost.Rock, 0.8))
+```
+
+| Profil       | Nom (`ParseProfile`) | Caractère                                              |
+|--------------|----------------------|--------------------------------------------------------|
+| `Flat`       | `flat`               | Aucune correction                                      |
+| `Rock`       | `rock`               | Sourire : basses et aigus relevés, médiums creusés     |
+| `Pop`        | `pop`                | Voix en avant, basses et brillance modérées            |
+| `Classical`  | `classical`          | Naturel, léger renfort des extrêmes                    |
+| `Jazz`       | `jazz`               | Chaud, médiums doux, aigus aérés                       |
+| `HipHop`     | `hiphop`             | Basses profondes, voix détachée                        |
+| `Electronic` | `electronic`         | Sub-basses et aigus marqués, médiums creusés           |
+| `Acoustic`   | `acoustic`           | Naturel, présence des cordes et de l'air               |
+| `Vocal`      | `vocal`              | Voix : intelligibilité, graves réduits                 |
+
+- **Intensité** : de `0` (aucun effet) à `1` (profil complet) ; elle met les gains à l'échelle. Les valeurs hors de cet intervalle sont ramenées dedans.
+- **Gain automatique** : pour éviter l'écrêtage, un gain global négatif est ajouté afin que la fréquence la plus renforcée reste à 0 dB. Le volume perçu baisse donc d'autant, à compenser en aval si besoin.
+- **Valeurs** : les courbes sont des points de départ raisonnables, pas une norme (il n'existe pas de standard officiel). Elles sont définies dans [profiles.go](profiles.go).
+- **Utilitaires** : `Profiles()` liste les profils, `ParseProfile("rock")` en retrouve un par son nom (utile pour un flag CLI), et `p.Bands()` renvoie les bandes d'un profil pour partir de lui avec `Equalizer`.
+
 ### Tester avec ffmpeg
 
 ```sh
@@ -127,6 +155,7 @@ Les tests vérifient notamment :
 - **TestStereoOddChunks** : le recollage des trames fonctionne avec des lectures fragmentées en stéréo.
 - **TestEqualizerMultiBand** : une courbe à quatre bandes donne les gains attendus à chaque fréquence (à moins de 0,7 dB).
 - **TestEqualizerQ**, **TestEqualizerIgnoredBands**, **TestEqualizerGainClamped**, **TestEqualizerStereoOddChunks** : effet de Q, bandes ignorées, limitation du gain à ±24 dB, lecture fragmentée identique à une lecture en un bloc.
+- **TestProfile\*** : noms et `ParseProfile`, profils identiques au signal d'origine (`Flat`, intensité nulle), pic à 0 dB après compensation, forme de la courbe (Rock en « sourire », Vocal, HipHop), lecture fragmentée.
 - **TestMidGain** : `MidBoost` agit à 1 kHz sans toucher 40 Hz ni 15 kHz.
 - **TestMidZeroIsIdentity** : intensité nulle = signal intact.
 - **TestTrebleGain** : `TrebleBoost` amplifie/atténue un sinus à 12 kHz sans toucher un sinus à 100 Hz.
@@ -136,4 +165,5 @@ Les tests vérifient notamment :
 
 - Pas de gestion des en-têtes WAV ni d'autres formats que s16le.
 - Les préréglages `BassBoost`, `MidBoost` et `TrebleBoost` ont leurs fréquences et leur gain maximal fixés dans le code (constantes `cutoffHz`, `midCenterHz`, `midQ`, `trebleCutoffHz` et `maxGainDB`) ; utiliser `Equalizer` pour les régler.
+- Les profils réduisent le volume (gain automatique anti-écrêtage) et il n'y a pas de limiteur ni de compresseur.
 - Pas de limiteur : un fort gain sur un signal déjà proche de la saturation sera écrêté (distorsion).
