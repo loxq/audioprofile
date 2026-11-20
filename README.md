@@ -179,6 +179,36 @@ io.Copy(out, audioprofile.Compressor(in, 44100, 2, audioprofile.CompressorSettin
 - Le gain est calculé en dB (genou quadratique), puis lissé : attaque quand la réduction augmente, relâchement quand elle diminue.
 - Sans effet (flux renvoyé tel quel) si `Ratio <= 1` et `MakeupDB = 0`.
 
+### Compresseur multibande
+
+```go
+type MultibandSettings struct {
+	Crossovers []float64            // séparations en Hz, strictement croissantes (n séparations = n+1 bandes)
+	Bands      []CompressorSettings // un compresseur par bande, du grave à l'aigu : len(Crossovers)+1
+}
+
+func MultibandCompressor(src io.Reader, sampleRate, channels int, s MultibandSettings) io.Reader
+```
+
+Chaque bande de fréquences est compressée séparément, avec les mêmes paramètres que [`Compressor`](#compresseur) (seuil, rapport, attaque, relâchement, genou, compensation). C'est ce qui permet de serrer les basses sans faire « pomper » les aigus : sur un test avec une basse forte et un aigu faible, l'aigu reste à 0,0 dB avec un compresseur multibande contre −20 dB avec un compresseur large bande aux mêmes réglages.
+
+```go
+s := audioprofile.MultibandSettings{
+	Crossovers: []float64{120, 1200, 6000}, // sub-basses | médiums | présence | air
+	Bands: []audioprofile.CompressorSettings{
+		{ThresholdDB: -24, Ratio: 3, AttackMs: 30, ReleaseMs: 200, KneeDB: 6},
+		{ThresholdDB: -22, Ratio: 2.5, AttackMs: 15, ReleaseMs: 150, KneeDB: 6},
+		{ThresholdDB: -22, Ratio: 2, AttackMs: 8, ReleaseMs: 100, KneeDB: 6},
+		{Ratio: 1}, // aigus laissés tels quels
+	},
+}
+out := audioprofile.MultibandCompressor(in, 44100, 2, s)
+```
+
+- **Séparation** : filtres de Linkwitz-Riley d'ordre 4 (−6 dB à la fréquence de séparation). À partir de trois séparations, les bandes graves traversent aussi un passe-tout aux séparations plus hautes : sans compression, la réponse en module est plate à ±0,1 dB de 20 Hz à 18 kHz (seule la phase tourne). Les filtres sont à **phase minimale** ; la phase linéaire demanderait un traitement par blocs avec une latence de plusieurs dizaines de millisecondes, hors de portée d'un traitement en flux de ce type.
+- **Détection liée** par bande : le même gain est appliqué aux deux canaux, ce qui préserve l'image stéréo.
+- Le flux est renvoyé tel quel si les réglages sont invalides (nombre de bandes différent de séparations + 1, séparations non croissantes ou au-delà de Nyquist) ou si aucune bande n'a d'effet.
+
 ### Ampli à tubes
 
 ```go
@@ -342,6 +372,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire, asymétrique avec biais), harmoniques impaires seulement à biais nul et paires avec biais, composante continue retirée, silence exact, réduction du repliement (≥ 20 dB), plafond doux (jamais ±32767 après arrondi), états par canal sans diaphonie, seuls les profils asymétriques (Jazz, Tube) produisent des harmoniques paires, gain des petits signaux qui croît avec le drive malgré le biais (régression), croissance avec l'intensité, niveau de Rock |
 | `tubeamp_presets_test.go` | noms et `ParseTubeAmpPreset`, `Settings()` copie, `Scaled` (0, 1, 2, plafonds, gain de sortie positif), intensité nulle, niveau proche de l'entrée, distorsion croissante de Clean à Lead, aucun écrêtage jusqu'à l'intensité 3 avec ou sans baffle, silence et lecture fragmentée |
 | `tubeamp_test.go` | identité sans réglage, polarité conservée de 1 à 4 étages, harmoniques paires sans composante continue, correcteur de timbre (±6 dB), baffle (aigus, très graves, présence, résonance), pic des filtres finaux à 0 dB, basse fréquence d'échantillonnage, gain de sortie, silence exact, états par canal et lecture fragmentée, aucun écrêtage même à fond |
+| `multiband_test.go` | somme des bandes plate à ±0,1 dB (4 bandes, de 20 Hz à 18 kHz, séparations comprises — un test de mutation sans la compensation passe-tout le fait échouer), bandes indépendantes (aigus intacts quand seules les basses sont compressées, contre −20 dB en large bande), compensation par bande, réglages invalides = identité, détection liée et canal silencieux exactement silencieux, longueur conservée, lecture fragmentée identique, mise à l'échelle par l'intensité |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
 | `cmd/audioprofile/main_test.go` | liste des profils et des amplis, traitement, identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |

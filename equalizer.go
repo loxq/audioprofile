@@ -48,11 +48,12 @@ func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader 
 }
 
 // chain décrit la chaîne de traitement d'un lecteur, dans l'ordre :
-// égalisation → compresseur → saturation (+ gain de sortie) → filtres finaux
-// → élargisseur stéréo.
+// égalisation → compresseur → compresseur multibande → saturation (+ gain de
+// sortie) → filtres finaux → élargisseur stéréo.
 type chain struct {
 	bands  []Band              // égalisation
 	comp   *CompressorSettings // compresseur (nil = aucun)
+	multi  *MultibandSettings  // compresseur multibande, après le compresseur (nil = aucun)
 	sat    *saturation         // saturation (nil = aucune)
 	post   []coeffs            // filtres appliqués après la saturation (timbre, baffle…)
 	stereo *stereoSettings     // élargisseur stéréo (nil = aucun)
@@ -82,12 +83,14 @@ func newChainReader(src io.Reader, sampleRate, channels int, c chain) io.Reader 
 		post = c.post
 	}
 	var wid *widener
+	var mb *multiband
 	if sampleRate > 0 {
 		wid = newWidener(float64(sampleRate), channels, c.stereo)
+		mb = newMultiband(float64(sampleRate), channels, c.multi)
 	}
 	r := &reader{
-		src: src, channels: channels, sat: sats, comp: cmp, wid: wid,
-		passthru: len(coefs) == 0 && sats == nil && cmp == nil && len(post) == 0 && wid == nil,
+		src: src, channels: channels, sat: sats, comp: cmp, multi: mb, wid: wid,
+		passthru: len(coefs) == 0 && sats == nil && cmp == nil && mb == nil && len(post) == 0 && wid == nil,
 		frame:    make([]float64, channels),
 	}
 	if !r.passthru {
@@ -154,6 +157,7 @@ type reader struct {
 	channels int
 	filters  [][]biquad   // filters[canal][bande]
 	comp     *compressor  // compresseur, après les filtres (peut être nil)
+	multi    *multiband   // compresseur multibande, après le compresseur (peut être nil)
 	sat      []*saturator // saturation + gain de sortie, un par canal, après le compresseur (peut être nil)
 	post     [][]biquad   // post[canal][filtre] : filtres appliqués après la saturation
 	wid      *widener     // élargisseur stéréo, après les filtres finaux (peut être nil)
@@ -210,6 +214,9 @@ func (r *reader) process(b []byte) []byte {
 		}
 		if r.comp != nil {
 			r.comp.apply(r.frame)
+		}
+		if r.multi != nil {
+			r.multi.apply(r.frame)
 		}
 		for ch := 0; ch < r.channels; ch++ {
 			y := r.frame[ch]
