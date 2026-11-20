@@ -237,3 +237,106 @@ func TestAmpErrors(t *testing.T) {
 		}
 	}
 }
+
+func samplesOf(s string) []int16 {
+	out := make([]int16, len(s)/2)
+	for i := range out {
+		out[i] = int16(uint16(s[2*i]) | uint16(s[2*i+1])<<8)
+	}
+	return out
+}
+
+// Avec un profil sans effet (flat, ou intensité 0), -ab rend le signal bit à bit : le gain
+// est de 0 dB et le fondu enchaîné de deux flux identiques ne change rien.
+func TestABWithNoEffectIsBitExact(t *testing.T) {
+	in := pcm(300, 30000, 2)
+	for _, args := range [][]string{
+		{"-ab", "-profile", "flat", "-ab-seconds", "0.1"},
+		{"-ab", "-profile", "rock", "-intensity", "0", "-ab-seconds", "0.1"},
+	} {
+		out, errOut, err := runCLI(t, in, args...)
+		if err != nil {
+			t.Fatalf("%v : %v", args, err)
+		}
+		if out != string(in) {
+			t.Errorf("%v : le signal doit rester intact", args)
+		}
+		if !strings.Contains(errOut, "A = original") || !strings.Contains(errOut, "aucun gain") {
+			t.Errorf("%v : convention A/B ou gain absents de %q", args, errOut)
+		}
+	}
+}
+
+// Avec un vrai profil : même longueur, premier segment = original au gain près, deuxième
+// segment différent, et la convention (A = original, quel côté est atténué) est annoncée.
+func TestABAlternatesAndReports(t *testing.T) {
+	in := pcm(60, 44100, 2) // 1 s
+	out, errOut, err := runCLI(t, in, "-ab", "-profile", "rock", "-ab-seconds", "0.25")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != len(in) {
+		t.Fatalf("longueur %d, attendu %d", len(out), len(in))
+	}
+	for _, want := range []string{"A = original", "B = traité (rock)", "segments de 0.25 s", "gain de"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("%q absent de %q", want, errOut)
+		}
+	}
+	a, o := samplesOf(string(in)), samplesOf(out)
+	// rapport sortie/entrée dans le premier segment (hors fondu) : constant
+	ratio := func(from, to int) (lo, hi float64) {
+		lo, hi = math.Inf(1), math.Inf(-1)
+		for i := from; i < to; i += 2 { // canal gauche
+			if a[i] > 4000 || a[i] < -4000 {
+				r := float64(o[i]) / float64(a[i])
+				lo, hi = math.Min(lo, r), math.Max(hi, r)
+			}
+		}
+		return
+	}
+	l1, h1 := ratio(0, 2*(11025-400))
+	if h1-l1 > 0.02 {
+		t.Errorf("premier segment : le rapport sortie/entrée varie de %.3f à %.3f, attendu constant (original au gain près)", l1, h1)
+	}
+	// le deuxième segment est le signal traité : il s'écarte de l'original au même gain
+	c1 := (l1 + h1) / 2
+	worst := 0.0
+	for i := 2 * (11025 + 400); i < 2*(22050-400); i += 2 {
+		worst = math.Max(worst, math.Abs(float64(o[i])-c1*float64(a[i])))
+	}
+	if worst < 400 { // 5 % de l'amplitude (8000)
+		t.Errorf("le deuxième segment doit être le signal traité (écart maximal %.0f)", worst)
+	}
+}
+
+func TestABFlagErrors(t *testing.T) {
+	in := pcm(200, 1000, 2)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-profile", "rock", "-ab-seconds", "2"}, "-ab-seconds ne s'utilise qu'avec -ab"},
+		{[]string{"-profile", "rock", "-ab", "-ab-seconds", "0"}, "-ab-seconds doit être > 0"},
+		{[]string{"-profile", "rock", "-ab", "-ab-seconds", "-3"}, "-ab-seconds doit être > 0"},
+		{[]string{"-profile", "rock", "-ab", "-ab-seconds", "NaN"}, "-ab-seconds doit être > 0"},
+		{[]string{"-profile", "rock", "-ab", "-ab-seconds", "+Inf"}, "-ab-seconds doit être > 0"},
+	} {
+		_, _, err := runCLI(t, in, tc.args...)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
+	}
+}
+
+// -ab fonctionne aussi avec un ampli, et sur de la mono.
+func TestABWithAmpAndMono(t *testing.T) {
+	in := pcm(200, 20000, 1)
+	out, errOut, err := runCLI(t, in, "-ab", "-amp", "lead", "-channels", "1", "-ab-seconds", "0.1")
+	if err != nil || len(out) != len(in) {
+		t.Fatalf("err=%v longueur %d/%d", err, len(out), len(in))
+	}
+	if !strings.Contains(errOut, "ampli lead") {
+		t.Errorf("l'ampli doit être nommé dans %q", errOut)
+	}
+}

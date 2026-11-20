@@ -12,7 +12,8 @@ Ce que le paquet `audioprofile` propose :
 - `StereoWidth` : **élargisseur stéréo** mid/side qui garde les basses au centre et la compatibilité mono ;
 - `TubeAmp` : **ampli à tubes simulé** (étages de saturation asymétriques en cascade, correcteur de timbre, baffle optionnel), avec les préréglages `AmpClean`, `AmpCrunch` et `AmpLead` ;
 - `BassBoost`, `MidBoost`, `TrebleBoost` : **préréglages à une bande** (basses, médiums, aigus) réglés par une simple intensité ;
-- `audioprofile` (commande) : applique un profil ou un préréglage d'ampli sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`.
+- `MatchGains`, `ApplyGain`, `Alternate` : **comparaison A/B à niveau égal** (alterne l'original et le traité) ;
+- `audioprofile` (commande) : applique un profil ou un préréglage d'ampli sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`, et compare à l'oreille avec `-ab`.
 
 Toutes ces fonctions prennent un `io.Reader` et en renvoient un autre : elles s'enchaînent, par exemple `TrebleBoost(MidBoost(BassBoost(src, …), …), …)`.
 
@@ -350,6 +351,22 @@ Mesures sur trois morceaux de `testdata/` (via le CLI, intensité 1, sans baffle
 - **Sur un morceau calme** (RMS −21 dBFS), le niveau reste à moins de 1,5 dB de l'original. **Sur un master très fort** (RMS −9,7 dBFS, crête 0 dBFS), la saturation compresse les passages forts : le volume baisse de 2 à 6 dB.
 - **`AmpClean` et `AmpCrunch` modifient peu un morceau calme** (leur drive y sature à peine : écart avec l'original de −14 dB sur le premier morceau). À l'intensité 2, `AmpCrunch` s'en écarte nettement plus (−7 dB). `AmpLead` est audible dès l'intensité 1 (−8 dB). Sur un master très fort, l'écart est plus faible (la saturation est déjà engagée).
 
+### Comparaison A/B à niveau égal
+
+```go
+func MatchGains(original, processed []byte, sampleRate, channels int) (originalDB, processedDB float64)
+func ApplyGain(pcm []byte, gainDB float64) []byte
+func Alternate(a, b []byte, sampleRate, channels int, segmentSeconds float64) []byte
+```
+
+Comparer un son traité à l'original quand il est plus fort est trompeur : le plus fort paraît presque toujours « meilleur ». Ces trois fonctions travaillent sur des tampons en mémoire (pas sur des flux) :
+
+- **`MatchGains`** mesure le niveau des deux signaux (niveau efficace en dBFS, en ignorant les passages sous −60 dBFS) et renvoie les gains à appliquer pour les égaliser. **Le plus fort est atténué, l'autre n'est jamais relevé** : aucun risque d'écrêtage. Un signal silencieux ne reçoit aucun gain.
+- **`ApplyGain`** renvoie une copie multipliée par un gain en dB, arrondie et écrêtée à 16 bits (0 dB = copie identique).
+- **`Alternate`** alterne `a` et `b` toutes les `segmentSeconds` secondes, en commençant par `a`. C'est un vrai A/B : les deux flux sont lus à la même position, la musique ne s'interrompt pas, seule la source change. Chaque changement est un **fondu enchaîné linéaire de 15 ms** (à gain constant : `a` et `b` étant la même musique, un fondu à puissance constante ajouterait 3 dB). Deux flux identiques ressortent identiques, bit à bit. La sortie a la longueur du plus court des deux.
+
+La commande les assemble avec l'option `-ab` ([voir plus bas](#comparer-à-loreille--ab)).
+
 ### Élargisseur stéréo
 
 ```go
@@ -425,10 +442,26 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 | `-amp`        | —       | Préréglage d'ampli à tubes : `clean`, `crunch` ou `lead` (exclusif avec `-profile`) |
 | `-cabinet`    | `false` | Avec `-amp` : ajoute la simulation de baffle (son étouffé sur un morceau complet) |
 | `-intensity`  | `1`     | Profil ou ampli : `0` = aucun effet, `1` = réglage complet, jusqu'à `3` pour l'exagérer |
+| `-ab`         | `false` | Alterne l'original (A) et le traité (B), à niveau égal |
+| `-ab-seconds` | `5`     | Avec `-ab` : durée de chaque segment, en secondes |
 | `-rate`       | `44100` | Fréquence d'échantillonnage en Hz                                 |
 | `-channels`   | `2`     | Nombre de canaux                                                  |
 | `-list`       | —       | Affiche les profils disponibles et quitte                         |
 | `-list-amps`  | —       | Affiche les préréglages d'ampli disponibles et quitte             |
+
+### Comparer à l'oreille (`-ab`)
+
+```sh
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -profile radio-hits -ab \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+```
+
+La sortie alterne l'**original (A)** pendant 5 s, puis le **traité (B)** pendant 5 s, et ainsi de suite, sur la même musique (on change de source, pas de position). `-ab-seconds` règle la durée des segments (`-ab-seconds 2` pour comparer plus vite). Avant de jouer, la commande affiche sur la sortie d'erreur la convention (A = original, B = traité), la durée des segments et **le gain appliqué** : le côté le plus fort est atténué pour que les deux aient le même niveau (niveau efficace, voir [`MatchGains`](#comparaison-ab-à-niveau-égal)).
+
+- **Le flux entier est lu et traité avant la première note** : il y a quelques secondes d'attente, et la mémoire utilisée est proportionnelle à la durée du morceau (environ 10 Mo par minute de stéréo à 44,1 kHz, deux fois : original et traité).
+- Fonctionne avec `-profile` comme avec `-amp`. Avec un profil sans effet (`flat`, ou intensité 0), la sortie est identique à l'entrée, bit à bit.
+- `-ab-seconds` sans `-ab` est une erreur.
 
 **`-rate` et `-channels` doivent correspondre aux options `-ar` et `-ac` de ffmpeg** : le flux brut n'a pas d'en-tête, l'outil ne peut pas les deviner. Une valeur incorrecte ne provoque pas d'erreur mais donne un son faux (basses et aigus mal placés, canaux mélangés).
 
@@ -453,9 +486,10 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `limiter_test.go` | signal sous le plafond bit à bit identique (mono et stéréo), alignement d'une impulsion et longueur (entrées de 1 à 1000 trames, vide), aucune crête au-dessus du plafond (sinus à pleine échelle dès le début, salve soudaine, bruit blanc, de 0 à −20 dB), anticipation (réduction avant la salve, retour au niveau après relâchement), rampe progressive et non une marche (échelon continu — un test de mutation sans la rampe le fait échouer), détection liée, lecture octet par octet / données + EOF / octets en trop, silence exact, réglages invalides, pas de dérive sur 3 × 65 536 trames |
 | `multiband_test.go` | somme des bandes plate à ±0,1 dB (4 bandes, de 20 Hz à 18 kHz, séparations comprises — un test de mutation sans la compensation passe-tout le fait échouer), bandes indépendantes (aigus intacts quand seules les basses sont compressées, contre −20 dB en large bande), compensation par bande, réglages invalides = identité, détection liée et canal silencieux exactement silencieux, longueur conservée, lecture fragmentée identique, mise à l'échelle par l'intensité |
 | `profiles_radio_test.go` | les 7 profils radio existent, noms et `ParseProfile`, constantes existantes inchangées, niveau à −18 dBFS dans la fourchette mesurée de chacun, aucune crête au-dessus du plafond de −1 dBFS (7 profils × 4 intensités × 7 fréquences, mono et stéréo, signal à −0,1 dBFS), identité à intensité 0 / négative / NaN, longueur conservée, profil sans égalisation (`radio-natural`) qui agit quand même, élargissement du côté/milieu à la largeur du profil à 3 kHz et pas à 60 Hz, image de `radio-talk` inchangée, dynamique non écrasée (écart faible/fort conservé), basse fréquence d'échantillonnage |
+| `ab_test.go` | niveau efficace (sinus, silence numérique ignoré, paramètres invalides), gains qui égalisent les niveaux sans jamais relever (traité plus fort, original plus fort, égaux, silence), `ApplyGain` (identité à 0 dB, −6 dB, écrêtage, copie, octet isolé), segments purs hors fondu, fondu linéaire monotone dans les deux sens, deux flux identiques bit à bit, entrelacement stéréo, longueur et paramètres invalides |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
-| `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
+| `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, erreurs d'options, ampli et mono), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues
 
