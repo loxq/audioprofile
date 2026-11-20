@@ -59,8 +59,8 @@ func TestSaturationAddsOddHarmonics(t *testing.T) {
 		v := int16(int(int16(uint16(in[i])|uint16(in[i+1])<<8)) * 5 / 2)
 		in[i], in[i+1] = byte(uint16(v)), byte(uint16(v)>>8)
 	}
-	clean, _ := io.ReadAll(newEqualizerReader(bytes.NewReader(in), fs, 1, nil, nil))
-	sat, _ := io.ReadAll(newEqualizerReader(bytes.NewReader(in), fs, 1, nil, newSaturator(9, 0)))
+	clean, _ := io.ReadAll(newEqualizerReader(bytes.NewReader(in), fs, 1, nil, nil, nil))
+	sat, _ := io.ReadAll(newEqualizerReader(bytes.NewReader(in), fs, 1, nil, nil, newSaturator(9, 0)))
 	if !bytes.Equal(in, clean) {
 		t.Fatal("sans saturation : signal intact attendu")
 	}
@@ -77,6 +77,11 @@ func TestSaturationAddsOddHarmonics(t *testing.T) {
 
 func TestRockSaturationScalesWithIntensity(t *testing.T) {
 	const fs = 44100
+	// isole la saturation : on retire le compresseur de Rock le temps du test
+	saved := profileCompression[Rock]
+	profileCompression[Rock] = nil
+	defer func() { profileCompression[Rock] = saved }()
+
 	// Dans les basses, là où Rock est au maximum de son égalisation, le niveau
 	// qui entre dans la saturation suit le drive : plus d'intensité, plus de grain.
 	// (À 200 Hz, le gain automatique compense exactement le drive : pas de différence.)

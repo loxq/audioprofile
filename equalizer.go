@@ -42,12 +42,12 @@ type Band struct {
 // Les bandes sans effet (gain nul, ou fréquence <= 0 ou >= Nyquist hors type Gain) sont ignorées.
 // S'il n'en reste aucune, ou si sampleRate <= 0, le flux est renvoyé tel quel.
 func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader {
-	return newEqualizerReader(src, sampleRate, channels, bands, nil)
+	return newEqualizerReader(src, sampleRate, channels, bands, nil, nil)
 }
 
-// newEqualizerReader est Equalizer avec, en option, un étage de saturation
-// appliqué après les filtres.
-func newEqualizerReader(src io.Reader, sampleRate, channels int, bands []Band, sat *saturator) io.Reader {
+// newEqualizerReader est Equalizer avec, en option, un compresseur puis une
+// saturation appliqués dans cet ordre après les filtres.
+func newEqualizerReader(src io.Reader, sampleRate, channels int, bands []Band, comp *CompressorSettings, sat *saturator) io.Reader {
 	if channels < 1 {
 		channels = 1
 	}
@@ -56,7 +56,15 @@ func newEqualizerReader(src io.Reader, sampleRate, channels int, bands []Band, s
 		coefs = designBands(float64(sampleRate), bands)
 	}
 
-	r := &reader{src: src, channels: channels, passthru: len(coefs) == 0 && sat == nil, sat: sat}
+	var cmp *compressor
+	if sampleRate > 0 {
+		cmp = newCompressor(float64(sampleRate), comp)
+	}
+	r := &reader{
+		src: src, channels: channels, sat: sat, comp: cmp,
+		passthru: len(coefs) == 0 && sat == nil && cmp == nil,
+		frame:    make([]float64, channels),
+	}
 	if !r.passthru {
 		r.filters = make([][]biquad, channels)
 		for ch := range r.filters {
@@ -114,8 +122,10 @@ func singleBand(src io.Reader, sampleRate, channels int, intensity float64, b Ba
 type reader struct {
 	src      io.Reader
 	channels int
-	filters  [][]biquad // filters[canal][bande]
-	sat      *saturator // saturation + gain de sortie, après les filtres (peut être nil)
+	filters  [][]biquad  // filters[canal][bande]
+	comp     *compressor // compresseur, après les filtres (peut être nil)
+	sat      *saturator  // saturation + gain de sortie, après le compresseur (peut être nil)
+	frame    []float64   // tampon de travail : une trame (un échantillon par canal)
 	passthru bool
 
 	pending []byte // octets lus mais ne formant pas encore une trame complète
@@ -156,21 +166,29 @@ func (r *reader) process(b []byte) []byte {
 	if r.passthru {
 		return b
 	}
-	ch := 0
-	for i := 0; i+1 < len(b); i += bytesPerSm {
-		y := float64(int16(uint16(b[i]) | uint16(b[i+1])<<8))
-		for j := range r.filters[ch] {
-			y = r.filters[ch][j].process(y)
+	step := r.channels * bytesPerSm
+	for i := 0; i+step <= len(b); i += step {
+		for ch := 0; ch < r.channels; ch++ {
+			j := i + ch*bytesPerSm
+			y := float64(int16(uint16(b[j]) | uint16(b[j+1])<<8))
+			for k := range r.filters[ch] {
+				y = r.filters[ch][k].process(y)
+			}
+			r.frame[ch] = y
 		}
-		if r.sat != nil {
-			y = r.sat.apply(y)
+		if r.comp != nil {
+			r.comp.apply(r.frame)
 		}
-		// écrêtage pour éviter le débordement d'entier
-		y = math.Max(-32768, math.Min(32767, math.Round(y)))
-		v := uint16(int16(y))
-		b[i], b[i+1] = byte(v), byte(v>>8)
-		if ch++; ch == r.channels {
-			ch = 0
+		for ch := 0; ch < r.channels; ch++ {
+			y := r.frame[ch]
+			if r.sat != nil {
+				y = r.sat.apply(y)
+			}
+			// écrêtage pour éviter le débordement d'entier
+			y = math.Max(-32768, math.Min(32767, math.Round(y)))
+			v := uint16(int16(y))
+			j := i + ch*bytesPerSm
+			b[j], b[j+1] = byte(v), byte(v>>8)
 		}
 	}
 	return b

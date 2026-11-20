@@ -80,8 +80,14 @@ var profileBands = [numProfiles][]Band{
 	},
 }
 
+// profileCompression donne, pour les profils qui en ont, le compresseur
+// appliqué juste après l'égalisation, à intensité 1 (nil = aucun).
+var profileCompression = [numProfiles]*CompressorSettings{
+	Rock: {ThresholdDB: -20, Ratio: 3, AttackMs: 10, ReleaseMs: 120, KneeDB: 6},
+}
+
 // profileSaturation donne, pour les profils qui en ont, la saturation douce et
-// le gain de sortie appliqués après l'égalisation, à intensité 1.
+// le gain de sortie appliqués après le compresseur, à intensité 1.
 // driveDB : gain poussé dans la saturation (plus c'est haut, plus le grain est marqué) ;
 // outputDB : gain de sortie final, pour régler le niveau après saturation.
 var profileSaturation = [numProfiles]struct{ driveDB, outputDB float64 }{
@@ -131,8 +137,8 @@ func (p Profile) Bands() []Band {
 // intensity met la courbe à l'échelle : 0 = aucun effet, 1 = profil complet
 // (valeurs ramenées dans [0, 1]).
 //
-// Certains profils (Rock) ajoutent aussi une saturation douce suivie d'un
-// gain de sortie : leur dosage suit l'intensité (0 = aucun effet).
+// Certains profils (Rock) ajoutent aussi un compresseur, puis une saturation
+// douce suivie d'un gain de sortie : leur dosage suit l'intensité (0 = aucun effet).
 //
 // Pour éviter l'écrêtage, un gain global négatif est ajouté automatiquement :
 // il ramène à 0 dB la fréquence la plus renforcée par le profil. Le volume
@@ -150,7 +156,12 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 		bands = append(bands, Band{Type: Gain, GainDB: -peak})
 	}
 	sat := profileSaturation[p]
-	return newEqualizerReader(src, sampleRate, channels, bands,
+	var comp *CompressorSettings
+	if c := profileCompression[p]; c != nil {
+		sc := scaleCompression(*c, intensity)
+		comp = &sc
+	}
+	return newEqualizerReader(src, sampleRate, channels, bands, comp,
 		newSaturator(sat.driveDB*intensity, sat.outputDB*intensity))
 }
 
