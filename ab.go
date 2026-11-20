@@ -1,6 +1,9 @@
 package audioprofile
 
-import "math"
+import (
+	"bytes"
+	"math"
+)
 
 const (
 	// abCrossfadeMs est la durée du fondu enchaîné entre deux segments d'Alternate :
@@ -13,12 +16,17 @@ const (
 	silenceLevelDB = -200.0
 )
 
-// levelDB donne le niveau d'un signal PCM (s16le, entrelacé), en dB, par la mesure qui sert à
-// égaliser les niveaux de MatchGains. Les fenêtres quasi silencieuses sont ignorées. Un signal
-// silencieux donne silenceLevelDB. Toute la logique de mesure est ici : un changement de
-// mesure ne touche que cette fonction.
-func levelDB(pcm []byte, sampleRate, channels int) float64 {
-	return rmsLevelDB(pcm, sampleRate, channels)
+// matchLevels donne le niveau (en dB) de chacun des deux signaux, par la même mesure : la
+// sonie intégrée en LUFS (voir MeasureLoudness) quand les deux ont au moins 400 ms de signal
+// audible, sinon le niveau efficace (rmsLevelDB), qui marche aussi sur un extrait très court.
+// Un signal silencieux donne silenceLevelDB.
+func matchLevels(original, processed []byte, sampleRate, channels int) (lo, lp float64) {
+	a, errA := MeasureLoudness(bytes.NewReader(original), sampleRate, channels)
+	b, errB := MeasureLoudness(bytes.NewReader(processed), sampleRate, channels)
+	if errA == nil && errB == nil && a.Valid && b.Valid {
+		return a.IntegratedLUFS, b.IntegratedLUFS
+	}
+	return rmsLevelDB(original, sampleRate, channels), rmsLevelDB(processed, sampleRate, channels)
 }
 
 // rmsLevelDB est le niveau efficace (RMS, en dBFS) de la moyenne des fenêtres de
@@ -59,14 +67,16 @@ func rmsLevelDB(pcm []byte, sampleRate, channels int) float64 {
 }
 
 // MatchGains renvoie les gains (en dB, <= 0) à appliquer à l'original et au signal traité
-// pour qu'ils aient le même niveau. On atténue toujours le plus fort et on ne relève jamais
-// l'autre : aucun risque d'écrêtage. Les signaux silencieux ne reçoivent aucun gain.
+// pour qu'ils aient la même sonie (LUFS intégrés, pondération K de l'UIT-R BS.1770, qui suit
+// mieux ce qu'on entend que le niveau efficace). On atténue toujours le plus fort et on ne
+// relève jamais l'autre : aucun risque d'écrêtage. Les signaux silencieux ne reçoivent aucun
+// gain. Sur un extrait de moins de 400 ms, qui n'a pas de sonie intégrée, la mesure retombe
+// sur le niveau efficace.
 //
 // Comparer deux sons à des niveaux différents est trompeur : le plus fort paraît toujours
 // « meilleur ». C'est pourquoi la commande -ab égalise les niveaux avant d'alterner.
 func MatchGains(original, processed []byte, sampleRate, channels int) (originalDB, processedDB float64) {
-	lo := levelDB(original, sampleRate, channels)
-	lp := levelDB(processed, sampleRate, channels)
+	lo, lp := matchLevels(original, processed, sampleRate, channels)
 	if lo <= silenceLevelDB || lp <= silenceLevelDB {
 		return 0, 0
 	}

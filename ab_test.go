@@ -58,10 +58,35 @@ func TestMatchGains(t *testing.T) {
 	}
 	// une fois appliqués, les niveaux sont égaux
 	gO, gP := MatchGains(quiet, loud, fs, 1)
-	lo := rmsLevelDB(ApplyGain(quiet, gO), fs, 1)
-	lp := rmsLevelDB(ApplyGain(loud, gP), fs, 1)
+	lo := measure(t, ApplyGain(quiet, gO), fs, 1).IntegratedLUFS
+	lp := measure(t, ApplyGain(loud, gP), fs, 1).IntegratedLUFS
 	if math.Abs(lo-lp) > 0.05 {
-		t.Errorf("niveaux après gain : %.3f et %.3f dB", lo, lp)
+		t.Errorf("sonies après gain : %.3f et %.3f LUFS", lo, lp)
+	}
+}
+
+// La mesure est la sonie K-pondérée, pas le niveau efficace : à niveau efficace égal, un
+// signal grave (peu audible) est moins « fort » qu'un signal à 3 kHz, et le gain en tient compte.
+func TestMatchGainsUsesLoudnessNotRMS(t *testing.T) {
+	const fs = 44100
+	bass := tone(40, ampOf(-20), fs, 2*fs)
+	mid := tone(3000, ampOf(-20), fs, 2*fs)
+	if r1, r2 := rmsLevelDB(bass, fs, 1), rmsLevelDB(mid, fs, 1); math.Abs(r1-r2) > 0.05 {
+		t.Fatalf("témoin : niveaux efficaces %.2f et %.2f dB, attendus égaux", r1, r2)
+	}
+	gO, gP := MatchGains(bass, mid, fs, 1)
+	if gO != 0 || gP > -3 {
+		t.Errorf("basse (original) et 3 kHz (traité) au même niveau efficace : gains (%.2f, %.2f), le 3 kHz doit être atténué d'au moins 3 dB", gO, gP)
+	}
+}
+
+// Moins de 400 ms : pas de sonie intégrée, on retombe sur le niveau efficace.
+func TestMatchGainsShortExcerptFallsBackToRMS(t *testing.T) {
+	const fs = 44100
+	a := tone(1000, ampOf(-20), fs, fs/4)
+	b := tone(1000, ampOf(-14), fs, fs/4)
+	if gO, gP := MatchGains(a, b, fs, 1); gO != 0 || math.Abs(gP+6) > 0.1 {
+		t.Errorf("gains (%.2f, %.2f), attendu (0, -6)", gO, gP)
 	}
 }
 

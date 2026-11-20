@@ -12,8 +12,9 @@ Ce que le paquet `audioprofile` propose :
 - `StereoWidth` : **élargisseur stéréo** mid/side qui garde les basses au centre et la compatibilité mono ;
 - `TubeAmp` : **ampli à tubes simulé** (étages de saturation asymétriques en cascade, correcteur de timbre, baffle optionnel), avec les préréglages `AmpClean`, `AmpCrunch` et `AmpLead` ;
 - `BassBoost`, `MidBoost`, `TrebleBoost` : **préréglages à une bande** (basses, médiums, aigus) réglés par une simple intensité ;
-- `MatchGains`, `ApplyGain`, `Alternate` : **comparaison A/B à niveau égal** (alterne l'original et le traité) ;
-- `audioprofile` (commande) : applique un profil ou un préréglage d'ampli sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`, et compare à l'oreille avec `-ab`.
+- `MeasureLoudness`, `LoudnessMeter` : **mesure de sonie** EBU R128 (intégrée en LUFS, plage en LU, crête), au fil de l'eau ;
+- `MatchGains`, `ApplyGain`, `Alternate` : **comparaison A/B à sonie égale** (alterne l'original et le traité) ;
+- `audioprofile` (commande) : applique un profil ou un préréglage d'ampli sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`, , compare à l'oreille avec `-ab` et mesure la sonie avec `-loudness`.
 
 Toutes ces fonctions prennent un `io.Reader` et en renvoient un autre : elles s'enchaînent, par exemple `TrebleBoost(MidBoost(BassBoost(src, …), …), …)`.
 
@@ -143,24 +144,26 @@ Les profils `radio-*` appliquent une chaîne de diffusion complète, dont la str
 
 Tous les réglages sont dans [profiles.go](profiles.go) et [profiles_radio.go](profiles_radio.go).
 
-**Leur niveau converge vers une valeur commune et leur dynamique réelle est plus faible : un morceau calme ou moyen sort plus fort, un master déjà très fort sort plus faible, et les crêtes ne dépassent jamais −1 dBFS.** Sur les trois morceaux de `testdata/` (valeurs mesurées sur le flux de sortie, intensité 1) :
+**Leur sonie converge vers une valeur commune et leur plage de sonie est plus faible : un morceau calme ou moyen sort plus fort, un master déjà très fort sort plus faible, et les crêtes ne dépassent jamais −1 dBFS.** Sur les trois morceaux de `testdata/` (valeurs mesurées sur le flux de sortie, intensité 1) :
 
-| Profil | Niveau RMS (calme / moyen / très fort) | Crête | Plage dynamique¹ | Côté/milieu² |
-|--------|------------------------------------------|-------|------------------|--------------|
-| `radio-hits`    | +5,4 / +2,5 / −3,8 dB | ≤ −1,0 dBFS | −3,4 / −5,9 / −6,9 dB | +0,8 / +2,0 / +4,8 dB |
-| `radio-rock`    | +6,9 / +4,4 / −1,6 dB | ≤ −1,0 dBFS | −4,0 / −5,7 / −7,2 dB | +0,5 / +1,8 / +4,6 dB |
-| `radio-urban`   | +4,1 / +1,8 / −3,8 dB | ≤ −1,0 dBFS | −2,9 / −4,8 / −6,3 dB | +0,4 / +1,0 / +3,7 dB |
-| `radio-club`    | +8,2 / +5,0 / −1,2 dB | ≤ −1,0 dBFS | −5,0 / −6,3 / −7,8 dB | +1,1 / +2,8 / +5,6 dB |
-| `radio-talk`    | +2,6 / +0,2 / −5,7 dB | ≤ −1,0 dBFS | −4,8 / −6,0 / −7,1 dB | −0,2 / +1,0 / +4,2 dB |
-| `radio-gold`    | +4,0 / +2,0 / −2,6 dB | ≤ −1,0 dBFS | −2,2 / −4,3 / −5,5 dB | +0,5 / +0,9 / +2,8 dB |
-| `radio-natural` | +2,3 / +0,8 / −3,4 dB | ≤ −1,0 dBFS | −1,2 / −3,0 / −4,3 dB | −0,1 / −0,2 / +1,5 dB |
+| Profil | Sonie intégrée¹ (calme / moyen / très fort) | Plage de sonie¹ (LRA) | Crête | Côté/milieu² |
+|--------|----------------------------------------------|-----------------------|-------|--------------|
+| `radio-hits`    | +5,5 / +2,7 / −2,9 LU | −1,7 / −4,8 / −4,2 LU | ≤ −1,0 dBFS | +0,8 / +2,0 / +4,8 dB |
+| `radio-rock`    | +7,0 / +4,8 / −0,5 LU | −2,0 / −4,7 / −4,6 LU | ≤ −1,0 dBFS | +0,5 / +1,8 / +4,6 dB |
+| `radio-urban`   | +4,1 / +1,8 / −3,1 LU | −1,6 / −3,9 / −4,2 LU | ≤ −1,0 dBFS | +0,4 / +1,0 / +3,7 dB |
+| `radio-club`    | +8,3 / +5,3 / −0,3 LU | −2,0 / −5,0 / −4,7 LU | ≤ −1,0 dBFS | +1,1 / +2,8 / +5,6 dB |
+| `radio-talk`    | +2,8 / +0,8 / −4,5 LU | −2,1 / −5,4 / −3,9 LU | ≤ −1,0 dBFS | −0,2 / +1,0 / +4,2 dB |
+| `radio-gold`    | +4,1 / +2,0 / −2,2 LU | −1,4 / −3,7 / −4,0 LU | ≤ −1,0 dBFS | +0,5 / +0,9 / +2,8 dB |
+| `radio-natural` | +2,3 / +0,8 / −3,1 LU | −0,9 / −2,8 / −3,3 LU | ≤ −1,0 dBFS | −0,1 / −0,2 / +1,5 dB |
 
-¹ Écart entre le 95ᵉ et le 10ᵉ centile du niveau RMS par fenêtres de 400 ms. ² Rapport d'énergie côté/milieu, en dB. L'élargisseur seul apporte `20·log10(largeur)` (+1,9 dB pour ×1,25) ; le reste vient de la compression des basses, très centrées, qui augmente la part relative du côté.
+Pour mémoire, les trois morceaux d'origine mesurent −19,2 / −13,3 / −7,7 LUFS (sonie intégrée) et 2,7 / 8,7 / 6,7 LU (plage de sonie).
+
+¹ Mesurées avec `-loudness` (UIT-R BS.1770 / EBU R128, voir [Mesure de sonie](#mesure-de-sonie)), en différence avec l'original ; les mêmes valeurs, pour l'original et quelques sorties, ont été recoupées avec le filtre `ebur128` de ffmpeg à 0,1 LU près, l'arrondi de l'affichage (par exemple −13,302 LUFS et 8,71 LU pour le morceau moyen, contre −13,3 et 8,7 ici). ² Rapport d'énergie côté/milieu, en dB. L'élargisseur seul apporte `20·log10(largeur)` (+1,9 dB pour ×1,25) ; le reste vient de la compression des basses, très centrées, qui augmente la part relative du côté.
 
 À lire dans ce tableau :
 
-- **Le niveau converge** vers une valeur commune : un morceau calme est relevé de 2 à 8 dB, un master très fort est **abaissé** de 1 à 6 dB (l'AGC et la multibande le compressent avant le limiteur). Ce n'est pas un volume maximal garanti.
-- **La dynamique réelle est réduite de 1 à 8 dB.** Si ces profils donnent l'impression d'un son plus « vivant », ce serait plutôt par le relâchement lent des bandes graves (le punch reste), la présence relevée des médiums et des aigus et l'élargissement stéréo : c'est une hypothèse, pas une mesure. Un renforçateur de transitoires ou une expansion, qui augmenteraient réellement la dynamique, ne sont pas implémentés.
+- **La sonie converge** vers une valeur commune : un morceau calme est relevé de 2 à 8 LU, un master très fort est **abaissé** de 0,3 à 4,5 LU (l'AGC et la multibande le compressent avant le limiteur). Ce n'est pas un volume maximal garanti.
+- **La plage de sonie est réduite de 0,9 à 5,4 LU.** Si ces profils donnent l'impression d'un son plus « vivant », ce serait plutôt par le relâchement lent des bandes graves (le punch reste), la présence relevée des médiums et des aigus et l'élargissement stéréo : c'est une hypothèse, pas une mesure. Un renforçateur de transitoires ou une expansion, qui augmenteraient réellement la dynamique, ne sont pas implémentés.
 - **Intensité** : `0` laisse le signal intact (octet pour octet) ; en dessous de 1, ratios, élargissement et égalisation sont réduits proportionnellement ; au-delà de 1, ratios et élargissement croissent (largeur ×1,75 pour `radio-hits` à l'intensité 3) tandis que les compensations de niveau restent à leur valeur d'intensité 1. Le plafond de −1 dBFS tient à toute intensité.
 - Sur un sinus à −18 dBFS, ces profils relèvent le niveau de +3,6 dB (`radio-natural`) à +10,4 dB (`radio-club`) : un signal faible est remonté par la compensation sans que les bandes ne le compressent. C'est ce que fait un AGC avec des passages calmes ; `radio-natural` et `radio-gold` sont les moins marqués.
 - Avec `sampleRate` bas (séparations au-delà de Nyquist, par exemple 8 kHz), la multibande est ignorée ; le reste de la chaîne et le limiteur continuent d'agir.
@@ -351,7 +354,32 @@ Mesures sur trois morceaux de `testdata/` (via le CLI, intensité 1, sans baffle
 - **Sur un morceau calme** (RMS −21 dBFS), le niveau reste à moins de 1,5 dB de l'original. **Sur un master très fort** (RMS −9,7 dBFS, crête 0 dBFS), la saturation compresse les passages forts : le volume baisse de 2 à 6 dB.
 - **`AmpClean` et `AmpCrunch` modifient peu un morceau calme** (leur drive y sature à peine : écart avec l'original de −14 dB sur le premier morceau). À l'intensité 2, `AmpCrunch` s'en écarte nettement plus (−7 dB). `AmpLead` est audible dès l'intensité 1 (−8 dB). Sur un master très fort, l'écart est plus faible (la saturation est déjà engagée).
 
-### Comparaison A/B à niveau égal
+### Mesure de sonie
+
+```go
+type Loudness struct {
+	IntegratedLUFS float64 // sonie intégrée (valable si Valid)
+	RangeLU        float64 // plage de sonie, LRA (valable si HasRange)
+	PeakDBFS       float64 // crête d'échantillon
+	Valid, HasRange bool
+}
+
+func MeasureLoudness(src io.Reader, sampleRate, channels int) (Loudness, error)
+func NewLoudnessMeter(sampleRate, channels int) *LoudnessMeter // io.Writer : Write, puis Loudness()
+```
+
+Mesure selon l'**UIT-R BS.1770-4** et l'**EBU R128**, la référence de la diffusion et du streaming :
+
+- **Sonie intégrée (LUFS)** : le signal passe par la pondération K (un shelf aigu de +4 dB vers 1,7 kHz qui modélise la tête, puis un passe-haut à 38 Hz), puis l'énergie est moyennée par blocs de 400 ms (recouvrement de 75 %) avec une **double porte** : −70 LUFS absolu, puis −10 LU sous la moyenne des blocs restants. Les passages calmes et le silence ne tirent donc pas la mesure vers le bas. Les portes se calculent sur la moyenne des énergies, jamais sur une moyenne de valeurs en LUFS.
+- **Plage de sonie (LRA, EBU Tech 3342)** : écart entre les centiles 10 % et 95 % des niveaux à court terme (3 s), après les portes −70 LUFS et −20 LU. Un signal stable donne 0 ; deux niveaux séparés de 10 dB donnent environ 10 LU. C'est la mesure de la **dynamique** à l'échelle d'un morceau.
+- **Crête d'échantillon (dBFS)** : pas la crête inter-échantillons (*true peak*).
+- Étalonnage : un sinus de 1 kHz à X dBFS sur les deux canaux donne X LUFS (−23 dBFS → −23,0 LUFS, cas d'essai de l'EBU Tech 3341) ; sur un seul canal, 3,01 dB de moins.
+- **Au fil de l'eau** : `LoudnessMeter` reçoit les octets par `Write`, par morceaux de n'importe quelle taille (même octet par octet : le résultat est identique), et ne garde que l'énergie de chaque pas de 100 ms (environ 10 valeurs par seconde).
+- **Résultat « non valable »** (`Valid` ou `HasRange` faux, jamais `-Inf` ni `NaN`) : silence, flux vide, moins de 400 ms de signal audible, et pour la plage, moins de 3 s.
+- Tous les canaux ont le même poids : exact en mono et en stéréo, approché au-delà (la recommandation pondère les canaux d'ambiance de 5.1 et ignore le canal des basses).
+- **Recoupé avec ffmpeg** : sur deux signaux synthétiques à 48 kHz, l'écart avec le filtre `ebur128` de ffmpeg est de 0,007 LU sur la sonie intégrée et de 0,001 LU sur la plage ; sur les trois morceaux de `testdata/` et une sortie traitée, il est d'au plus 0,1 LU (sonie intégrée et plage), à l'arrondi de l'affichage près. Les coefficients du filtre à 48 kHz sont ceux de la table de la recommandation, à 10⁻⁹ près.
+
+### Comparaison A/B à sonie égale
 
 ```go
 func MatchGains(original, processed []byte, sampleRate, channels int) (originalDB, processedDB float64)
@@ -361,7 +389,7 @@ func Alternate(a, b []byte, sampleRate, channels int, segmentSeconds float64) []
 
 Comparer un son traité à l'original quand il est plus fort est trompeur : le plus fort paraît presque toujours « meilleur ». Ces trois fonctions travaillent sur des tampons en mémoire (pas sur des flux) :
 
-- **`MatchGains`** mesure le niveau des deux signaux (niveau efficace en dBFS, en ignorant les passages sous −60 dBFS) et renvoie les gains à appliquer pour les égaliser. **Le plus fort est atténué, l'autre n'est jamais relevé** : aucun risque d'écrêtage. Un signal silencieux ne reçoit aucun gain.
+- **`MatchGains`** mesure la **sonie** des deux signaux ([LUFS intégrés](#mesure-de-sonie), qui suivent mieux ce qu'on entend que le niveau efficace : à niveau efficace égal, un signal grave paraît moins fort qu'un signal à 3 kHz) et renvoie les gains à appliquer pour les égaliser. Sur un extrait de moins de 400 ms, qui n'a pas de sonie intégrée, il retombe sur le niveau efficace. **Le plus fort est atténué, l'autre n'est jamais relevé** : aucun risque d'écrêtage. Un signal silencieux ne reçoit aucun gain.
 - **`ApplyGain`** renvoie une copie multipliée par un gain en dB, arrondie et écrêtée à 16 bits (0 dB = copie identique).
 - **`Alternate`** alterne `a` et `b` toutes les `segmentSeconds` secondes, en commençant par `a`. C'est un vrai A/B : les deux flux sont lus à la même position, la musique ne s'interrompt pas, seule la source change. Chaque changement est un **fondu enchaîné linéaire de 15 ms** (à gain constant : `a` et `b` étant la même musique, un fondu à puissance constante ajouterait 3 dB). Deux flux identiques ressortent identiques, bit à bit. La sortie a la longueur du plus court des deux.
 
@@ -442,7 +470,8 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 | `-amp`        | —       | Préréglage d'ampli à tubes : `clean`, `crunch` ou `lead` (exclusif avec `-profile`) |
 | `-cabinet`    | `false` | Avec `-amp` : ajoute la simulation de baffle (son étouffé sur un morceau complet) |
 | `-intensity`  | `1`     | Profil ou ampli : `0` = aucun effet, `1` = réglage complet, jusqu'à `3` pour l'exagérer |
-| `-ab`         | `false` | Alterne l'original (A) et le traité (B), à niveau égal |
+| `-loudness`   | `false` | Affiche sur la sortie d'erreur la sonie (intégrée, plage, crête) de l'original et du traité |
+| `-ab`         | `false` | Alterne l'original (A) et le traité (B), à sonie égale |
 | `-ab-seconds` | `5`     | Avec `-ab` : durée de chaque segment, en secondes |
 | `-rate`       | `44100` | Fréquence d'échantillonnage en Hz                                 |
 | `-channels`   | `2`     | Nombre de canaux                                                  |
@@ -457,11 +486,28 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
   | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
 ```
 
-La sortie alterne l'**original (A)** pendant 5 s, puis le **traité (B)** pendant 5 s, et ainsi de suite, sur la même musique (on change de source, pas de position). `-ab-seconds` règle la durée des segments (`-ab-seconds 2` pour comparer plus vite). Avant de jouer, la commande affiche sur la sortie d'erreur la convention (A = original, B = traité), la durée des segments et **le gain appliqué** : le côté le plus fort est atténué pour que les deux aient le même niveau (niveau efficace, voir [`MatchGains`](#comparaison-ab-à-niveau-égal)).
+La sortie alterne l'**original (A)** pendant 5 s, puis le **traité (B)** pendant 5 s, et ainsi de suite, sur la même musique (on change de source, pas de position). `-ab-seconds` règle la durée des segments (`-ab-seconds 2` pour comparer plus vite). Avant de jouer, la commande affiche sur la sortie d'erreur la convention (A = original, B = traité), la durée des segments et **le gain appliqué** : le côté le plus fort est atténué pour que les deux aient la même sonie (LUFS, voir [`MatchGains`](#comparaison-ab-à-sonie-égale)).
 
 - **Le flux entier est lu et traité avant la première note** : il y a quelques secondes d'attente, et la mémoire utilisée est proportionnelle à la durée du morceau (environ 10 Mo par minute de stéréo à 44,1 kHz, deux fois : original et traité).
 - Fonctionne avec `-profile` comme avec `-amp`. Avec un profil sans effet (`flat`, ou intensité 0), la sortie est identique à l'entrée, bit à bit.
 - `-ab-seconds` sans `-ab` est une erreur.
+
+### Mesurer la sonie (`-loudness`)
+
+```sh
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -profile radio-hits -loudness \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+```
+
+```
+Sonie (EBU R128)               original     traité
+  intégrée (LUFS)                 -13.3      -10.6
+  plage (LU)                        8.7        3.9
+  crête d'échantillon (dBFS)       -0.2       -1.0
+```
+
+Le tableau s'affiche sur la sortie d'erreur à la fin du flux ; la sortie audio n'est pas modifiée (octet pour octet). La mesure se fait au fil de l'eau, sans garder le morceau en mémoire. Pour ne garder que la mesure, envoyez la sortie dans `/dev/null` : `… | ./audioprofile -profile radio-hits -loudness > /dev/null`. Avec `-ab`, les deux flux entiers sont mesurés (pas l'alternance). Un « — » signale une mesure impossible (silence, moins de 400 ms de signal, moins de 3 s pour la plage).
 
 **`-rate` et `-channels` doivent correspondre aux options `-ar` et `-ac` de ffmpeg** : le flux brut n'a pas d'en-tête, l'outil ne peut pas les deviner. Une valeur incorrecte ne provoque pas d'erreur mais donne un son faux (basses et aigus mal placés, canaux mélangés).
 
@@ -486,10 +532,11 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `limiter_test.go` | signal sous le plafond bit à bit identique (mono et stéréo), alignement d'une impulsion et longueur (entrées de 1 à 1000 trames, vide), aucune crête au-dessus du plafond (sinus à pleine échelle dès le début, salve soudaine, bruit blanc, de 0 à −20 dB), anticipation (réduction avant la salve, retour au niveau après relâchement), rampe progressive et non une marche (échelon continu — un test de mutation sans la rampe le fait échouer), détection liée, lecture octet par octet / données + EOF / octets en trop, silence exact, réglages invalides, pas de dérive sur 3 × 65 536 trames |
 | `multiband_test.go` | somme des bandes plate à ±0,1 dB (4 bandes, de 20 Hz à 18 kHz, séparations comprises — un test de mutation sans la compensation passe-tout le fait échouer), bandes indépendantes (aigus intacts quand seules les basses sont compressées, contre −20 dB en large bande), compensation par bande, réglages invalides = identité, détection liée et canal silencieux exactement silencieux, longueur conservée, lecture fragmentée identique, mise à l'échelle par l'intensité |
 | `profiles_radio_test.go` | les 7 profils radio existent, noms et `ParseProfile`, constantes existantes inchangées, niveau à −18 dBFS dans la fourchette mesurée de chacun, aucune crête au-dessus du plafond de −1 dBFS (7 profils × 4 intensités × 7 fréquences, mono et stéréo, signal à −0,1 dBFS), identité à intensité 0 / négative / NaN, longueur conservée, profil sans égalisation (`radio-natural`) qui agit quand même, élargissement du côté/milieu à la largeur du profil à 3 kHz et pas à 60 Hz, image de `radio-talk` inchangée, dynamique non écrasée (écart faible/fort conservé), basse fréquence d'échantillonnage |
-| `ab_test.go` | niveau efficace (sinus, silence numérique ignoré, paramètres invalides), gains qui égalisent les niveaux sans jamais relever (traité plus fort, original plus fort, égaux, silence), `ApplyGain` (identité à 0 dB, −6 dB, écrêtage, copie, octet isolé), segments purs hors fondu, fondu linéaire monotone dans les deux sens, deux flux identiques bit à bit, entrelacement stéréo, longueur et paramètres invalides |
+| `loudness_test.go` | coefficients de la pondération K à 48 kHz égaux à la table de l'UIT-R BS.1770-4 (10⁻⁹), gain de +0,69 dB à 1 kHz (44,1 / 48 / 96 kHz), étalonnage (X dBFS stéréo → X LUFS, mono −3,01 dB, à 44,1 / 48 / 96 kHz), accord avec ffmpeg `ebur128` sur deux signaux (±0,1 LU et ±1 LU), doubles portes (calme, silence numérique, niveau à −8 LU retenu), plage de sonie (stable ≈ 0, deux niveaux ≈ 10 LU), cas non valables (silence, vide, 200 ms, paramètres) sans `-Inf` ni `NaN`, morceaux de toute taille (octet par octet, 3 octets, 4097 octets, octet isolé) identiques, plusieurs canaux |
+| `ab_test.go` | niveau efficace (sinus, silence numérique ignoré, paramètres invalides), gains qui égalisent les sonies sans jamais relever (traité plus fort, original plus fort, égaux, silence), sonie et non niveau efficace (basse contre 3 kHz), repli sur le niveau efficace sous 400 ms, `ApplyGain` (identité à 0 dB, −6 dB, écrêtage, copie, octet isolé), segments purs hors fondu, fondu linéaire monotone dans les deux sens, deux flux identiques bit à bit, entrelacement stéréo, longueur et paramètres invalides |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
-| `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, erreurs d'options, ampli et mono), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
+| `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues
 

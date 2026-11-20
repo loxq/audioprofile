@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -338,5 +340,103 @@ func TestABWithAmpAndMono(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "ampli lead") {
 		t.Errorf("l'ampli doit être nommé dans %q", errOut)
+	}
+}
+
+// -loudness n'altère pas la sortie, et affiche la sonie de l'original et du traité : un sinus
+// de 1 kHz d'amplitude 8000 (−12,3 dBFS) sur les deux canaux mesure −12,25 LUFS.
+func TestLoudnessReport(t *testing.T) {
+	in := pcm(1000, 44100, 2)
+	plain, _, err := runCLI(t, in, "-profile", "rock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, err := runCLI(t, in, "-profile", "rock", "-loudness")
+	if err != nil || out != plain {
+		t.Fatalf("-loudness ne doit pas changer la sortie (err=%v)", err)
+	}
+	flat, errFlat, err := runCLI(t, in, "-profile", "flat", "-loudness")
+	if err != nil || flat != string(in) {
+		t.Fatalf("flat : sortie différente de l'entrée (err=%v)", err)
+	}
+	for _, want := range []string{"Sonie (EBU R128)", "original", "traité", "intégrée (LUFS)", "plage (LU)", "crête d'échantillon (dBFS)"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("%q absent de %q", want, errOut)
+		}
+	}
+	// flat : l'original et le traité ont exactement la même sonie
+	for _, line := range strings.Split(errFlat, "\n") {
+		if strings.Contains(line, "intégrée (LUFS)") {
+			f := strings.Fields(line)
+			v, err := strconv.ParseFloat(f[len(f)-1], 64)
+			if len(f) < 4 || f[len(f)-1] != f[len(f)-2] || err != nil || math.Abs(v+12.25) > 0.1 {
+				t.Errorf("sonie intégrée de flat : %q, attendu ≈ -12,25 des deux côtés", line)
+			}
+		}
+	}
+	// rock change la sonie du traité mais pas celle de l'original
+	var origRock, procRock, origFlat string
+	for _, line := range strings.Split(errOut, "\n") {
+		if strings.Contains(line, "intégrée (LUFS)") {
+			f := strings.Fields(line)
+			origRock, procRock = f[len(f)-2], f[len(f)-1]
+		}
+	}
+	for _, line := range strings.Split(errFlat, "\n") {
+		if strings.Contains(line, "intégrée (LUFS)") {
+			f := strings.Fields(line)
+			origFlat = f[len(f)-2]
+		}
+	}
+	if origRock != origFlat || procRock == origRock {
+		t.Errorf("original %s (flat %s), traité %s : l'original doit être le même et le traité différer", origRock, origFlat, procRock)
+	}
+}
+
+func TestLoudnessReportNotMeasured(t *testing.T) {
+	_, errOut, err := runCLI(t, pcm(1000, 4000, 2), "-profile", "flat", "-loudness") // 90 ms
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut, "—") || !strings.Contains(errOut, "400 ms") {
+		t.Errorf("signal trop court : explication attendue dans %q", errOut)
+	}
+	if strings.Contains(errOut, "NaN") || strings.Contains(errOut, "Inf") {
+		t.Errorf("valeur non finie dans %q", errOut)
+	}
+	_, errOut, err = runCLI(t, make([]byte, 4*44100*2), "-profile", "flat", "-loudness") // silence
+	if err != nil || !strings.Contains(errOut, "—") || strings.Contains(errOut, "Inf") {
+		t.Errorf("silence : err=%v, %q", err, errOut)
+	}
+}
+
+// Avec -ab, -loudness mesure les deux flux entiers (pas l'alternance).
+func TestLoudnessWithAB(t *testing.T) {
+	_, errOut, err := runCLI(t, pcm(1000, 44100, 2), "-ab", "-profile", "rock", "-loudness", "-ab-seconds", "0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut, "Sonie (EBU R128)") || !strings.Contains(errOut, "A = original") || !strings.Contains(errOut, "sonie") {
+		t.Errorf("tableau et convention A/B attendus dans %q", errOut)
+	}
+}
+
+// Piège rencontré plus tôt : /dev/null est un périphérique caractère mais pas un terminal. Pour ne
+// garder que la mesure, la sortie doit pouvoir y aller.
+func TestOutputToDevNullIsAllowed(t *testing.T) {
+	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Skip(err)
+	}
+	defer null.Close()
+	var se bytes.Buffer
+	if err := run([]string{"-profile", "flat", "-loudness"}, bytes.NewReader(pcm(1000, 44100, 2)), null, &se); err != nil {
+		t.Fatalf("sortie vers %s : %v", os.DevNull, err)
+	}
+	if !strings.Contains(se.String(), "Sonie (EBU R128)") {
+		t.Errorf("mesure attendue sur la sortie d'erreur : %q", se.String())
+	}
+	if isTerminal(null) {
+		t.Error("/dev/null n'est pas un terminal")
 	}
 }

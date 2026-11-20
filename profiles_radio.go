@@ -11,8 +11,8 @@ package audioprofile
 //
 // Contrairement aux autres profils, leur niveau n'est pas calé sur celui de l'entrée :
 // il converge vers une valeur commune. Un morceau calme ou moyen sort plus fort, un
-// master déjà très fort sort plus faible (mesuré : de −6 à +8 dB selon le morceau), et
-// les crêtes ne dépassent jamais le plafond. La dynamique réelle est réduite
+// master déjà très fort sort plus faible (sonie intégrée mesurée : de −4,5 à +8,3 LU selon le morceau), et
+// les crêtes ne dépassent jamais le plafond. La plage de sonie est réduite de 0,9 à 5,4 LU
 // (compression et limitation) ; si le son paraît plus vivant, c'est plutôt par le
 // relâchement lent des bandes graves, la présence des médiums et des aigus et
 // l'élargissement stéréo.
