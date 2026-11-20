@@ -81,7 +81,8 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 | `Acoustic`   | `acoustic`           | Naturel, présence des cordes et de l'air           |
 | `Vocal`      | `vocal`              | Voix : intelligibilité, graves réduits             |
 
-- **Intensité** : de `0` (aucun effet) à `1` (profil complet) ; elle met à l'échelle les gains, le ratio du compresseur et le drive de la saturation. Les valeurs hors de cet intervalle sont ramenées dedans.
+- **Intensité** : `0` = aucun effet, `1` = profil complet. Elle met à l'échelle les gains, le ratio du compresseur et le drive de la saturation.
+- **Exagérer un profil** : une intensité **au-delà de 1** (jusqu'à `MaxIntensity` = 3) amplifie l'effet, utile pour juger d'un profil à l'oreille ou pour un rendu plus marqué. Le gain automatique grandit avec l'effet, donc le volume baisse (jusqu'à environ −7 dB à 3 selon le profil, mesuré à −18 dBFS et 1 kHz) ; la compensation du compresseur, elle, reste à sa valeur d'intensité 1 pour éviter l'écrêtage. Les valeurs hors de [0, `MaxIntensity`] sont ramenées dedans.
 - **Gain automatique** : pour éviter l'écrêtage, un gain global négatif est ajouté afin que la fréquence la plus renforcée reste à 0 dB. Le volume perçu baisse donc d'autant, sauf pour les profils avec effets (voir plus bas).
 - **Chaîne de traitement** : égalisation → compresseur → saturation → gain de sortie. Les deux derniers étages ne concernent que certains profils.
 - **Valeurs** : les courbes sont des points de départ raisonnables, pas une norme (il n'existe pas de standard officiel). Elles sont définies dans [profiles.go](profiles.go).
@@ -193,6 +194,11 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
   | ./audioprofile -profile pop -intensity 0.5 \
   | ffmpeg -f s16le -ar 44100 -ac 2 -i - musique_pop.wav
 
+# Exagérer un profil pour mieux l'entendre (jusqu'à 3)
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -profile rock -intensity 2 \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+
 # Comparer sans pipe, avec des fichiers bruts
 ./audioprofile -profile jazz < musique.raw > musique_jazz.raw
 ```
@@ -200,7 +206,7 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 | Option        | Défaut  | Description                                                       |
 |---------------|---------|-------------------------------------------------------------------|
 | `-profile`    | —       | Profil à appliquer (obligatoire, insensible à la casse)           |
-| `-intensity`  | `1`     | De `0` (aucun effet) à `1` (profil complet)                       |
+| `-intensity`  | `1`     | `0` = aucun effet, `1` = profil complet, jusqu'à `3` pour l'exagérer |
 | `-rate`       | `44100` | Fréquence d'échantillonnage en Hz                                 |
 | `-channels`   | `2`     | Nombre de canaux                                                  |
 | `-list`       | —       | Affiche les profils disponibles et quitte                         |
@@ -223,13 +229,14 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `equalizer_test.go` | courbe multibande (gains à moins de 0,7 dB), effet de Q, bandes ignorées, limitation à ±24 dB, lecture fragmentée identique à une lecture en un bloc |
 | `dynamics_test.go` | courbe statique du compresseur, genou doux, attaque / relâchement progressifs, détection liée stéréo, coude franc sans NaN, compensation seule, mise à l'échelle par l'intensité |
 | `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire), harmoniques impaires uniquement, croissance avec l'intensité, niveau de Rock, pas d'écrêtage |
-| `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre |
+| `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
 | `cmd/audioprofile/main_test.go` | liste, traitement, identité de `flat`, mono et fréquence, erreurs, entrée vide |
 
 ## Limites connues
 
 - Pas de gestion des en-têtes WAV ni d'autres formats que s16le.
 - Les préréglages `BassBoost`, `MidBoost` et `TrebleBoost` ont leurs fréquences et leur gain maximal fixés dans le code (constantes `cutoffHz`, `midCenterHz`, `midQ`, `trebleCutoffHz` et `maxGainDB`) ; utiliser `Equalizer` pour les régler.
+- Au-delà de l'intensité 1, le volume baisse et le niveau n'est plus calibré sur l'entrée ; un signal à pleine échelle (0 dBFS) peut écrêter plus largement qu'à l'intensité 1 (Pop, Vocal).
 - Les réglages des profils n'ont pas été validés à l'oreille : ils sont vérifiés par mesure (forme des courbes, niveaux) mais restent des points de départ à affiner.
 - Le compresseur n'a pas d'anticipation (look-ahead) et il n'y a pas de limiteur : un pic très bref passe pendant le temps d'attaque. Un signal à pleine échelle (0 dBFS) dès son premier échantillon peut ainsi écrêter brièvement (Pop, Vocal) ; à −3 dBFS, aucun profil n'écrête. En dehors des profils, un fort gain d'égalisation sur un signal déjà proche de la saturation est écrêté (distorsion).
 - La saturation n'est pas suréchantillonnée : à fort drive sur des aigus très forts, un peu de repliement de spectre (aliasing) est possible.

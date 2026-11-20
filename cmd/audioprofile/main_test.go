@@ -83,7 +83,7 @@ func TestErrors(t *testing.T) {
 		"profil inconnu":    {[]string{"-profile", "disco"}, "profil inconnu"},
 		"rate invalide":     {[]string{"-profile", "rock", "-rate", "0"}, "-rate"},
 		"channels invalide": {[]string{"-profile", "rock", "-channels", "0"}, "-channels"},
-		"intensité > 1":     {[]string{"-profile", "rock", "-intensity", "2"}, "-intensity"},
+		"intensité > max":   {[]string{"-profile", "rock", "-intensity", "3.5"}, "-intensity"},
 		"intensité < 0":     {[]string{"-profile", "rock", "-intensity", "-0.5"}, "-intensity"},
 		"argument en trop":  {[]string{"-profile", "rock", "fichier.raw"}, "argument inattendu"},
 		"option inconnue":   {[]string{"-profile", "rock", "-nope"}, "nope"},
@@ -103,5 +103,21 @@ func TestEmptyInput(t *testing.T) {
 	out, _, err := runCLI(t, nil, "-profile", "rock")
 	if err != nil || out != "" {
 		t.Errorf("entrée vide : sortie vide attendue (err=%v, %d octets)", err, len(out))
+	}
+}
+
+func TestIntensityAboveOne(t *testing.T) {
+	in := pcm(60, 5000, 2)
+	one, _, err1 := runCLI(t, in, "-profile", "rock", "-intensity", "1")
+	two, _, err2 := runCLI(t, in, "-profile", "rock", "-intensity", "2")
+	max, _, err3 := runCLI(t, in, "-profile", "rock", "-intensity", "3")
+	if err1 != nil || err2 != nil || err3 != nil {
+		t.Fatalf("erreurs : %v %v %v", err1, err2, err3)
+	}
+	if one == two || two == max {
+		t.Error("une intensité plus forte doit donner un résultat différent")
+	}
+	if len(two) != len(in) {
+		t.Errorf("longueur %d, attendu %d", len(two), len(in))
 	}
 }

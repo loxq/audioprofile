@@ -174,6 +174,10 @@ func TestScaleCompression(t *testing.T) {
 	if got := scaleCompression(base, 0.5); got.Ratio != 2 || got.MakeupDB != 2 || got.ThresholdDB != -20 {
 		t.Errorf("intensité 0.5 : %+v", got)
 	}
+	// au-delà de 1 : le ratio continue de croître, la compensation reste fixe
+	if got := scaleCompression(base, 2); got.Ratio != 5 || got.MakeupDB != 4 {
+		t.Errorf("intensité 2 : %+v", got)
+	}
 }
 
 // Coude franc : aucun NaN, y compris pile au seuil (0/0 dans une formule de genou naïve).

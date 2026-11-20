@@ -60,7 +60,7 @@ func TestProfilesPeakAtZeroDB(t *testing.T) {
 			if p == Flat {
 				continue
 			}
-			for _, intensity := range []float64{0.5, 1} {
+			for _, intensity := range []float64{0.5, 1, 2, MaxIntensity} {
 				bands := p.Bands()
 				for i := range bands {
 					bands[i].GainDB *= intensity
@@ -159,15 +159,44 @@ func TestProfilesLevelNearUnity(t *testing.T) {
 // À -3 dBFS (crête réaliste) aucun profil ne doit écrêter, à aucune fréquence.
 func TestProfilesNoClipping(t *testing.T) {
 	const fs = 44100
-	for _, p := range Profiles() {
-		for _, f := range []float64{40, 100, 400, 1000, 3000, 8000, 15000} {
-			in := tone(f, ampOf(-3), fs, fs)
-			out, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), fs, 1, p, 1))
-			for i := 0; i+1 < len(out); i += 2 {
-				if v := int16(uint16(out[i]) | uint16(out[i+1])<<8); v == 32767 || v == -32768 {
-					t.Fatalf("%v @%.0f Hz : écrêtage à l'échantillon %d", p, f, i/2)
+	for _, intensity := range []float64{1, 2, MaxIntensity} { // y compris exagéré
+		for _, p := range Profiles() {
+			for _, f := range []float64{40, 100, 400, 1000, 3000, 8000, 15000} {
+				in := tone(f, ampOf(-3), fs, fs)
+				out, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), fs, 1, p, intensity))
+				for i := 0; i+1 < len(out); i += 2 {
+					if v := int16(uint16(out[i]) | uint16(out[i+1])<<8); v == 32767 || v == -32768 {
+						t.Fatalf("%v @%.0f Hz, intensité %.0f : écrêtage à l'échantillon %d", p, f, intensity, i/2)
+					}
 				}
 			}
 		}
+	}
+}
+
+// Au-delà de 1 l'effet est exagéré, plafonné à MaxIntensity.
+func TestProfileIntensityAboveOne(t *testing.T) {
+	withoutDynamics(t)
+	const fs = 44100
+	// rapport basses/médiums (EQ seul) : croît avec l'intensité
+	bm := func(intensity float64) float64 {
+		r := func(f float64) float64 {
+			in := sine(f, fs, fs)
+			out, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), fs, 1, Rock, intensity))
+			return rms(out) / rms(in)
+		}
+		return r(40) / r(400)
+	}
+	b1, b2, b3 := bm(1), bm(2), bm(MaxIntensity)
+	t.Logf("Rock basses/médiums : %.2f @1, %.2f @2, %.2f @%.0f", b1, b2, b3, MaxIntensity)
+	if !(b2 > b1*1.3 && b3 > b2) {
+		t.Errorf("l'effet doit croître au-delà de 1 (%.2f, %.2f, %.2f)", b1, b2, b3)
+	}
+	// plafonné : 3 et 10 donnent exactement la même sortie
+	in := sine(60, fs, 4000)
+	a, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), fs, 1, Rock, MaxIntensity))
+	b, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), fs, 1, Rock, 10))
+	if !bytes.Equal(a, b) {
+		t.Error("l'intensité doit être plafonnée à MaxIntensity")
 	}
 }

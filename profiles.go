@@ -139,10 +139,16 @@ func (p Profile) Bands() []Band {
 	return append([]Band(nil), profileBands[p]...)
 }
 
+// MaxIntensity est l'intensité maximale acceptée par ApplyProfile.
+const MaxIntensity = 3.0
+
 // ApplyProfile applique un profil d'égaliseur à un flux PCM (s16le, entrelacé).
 //
-// intensity met la courbe à l'échelle : 0 = aucun effet, 1 = profil complet
-// (valeurs ramenées dans [0, 1]).
+// intensity met la courbe à l'échelle : 0 = aucun effet, 1 = profil complet,
+// au-delà de 1 = profil exagéré (gains, ratio du compresseur et drive de la
+// saturation multipliés d'autant). Les valeurs sont ramenées dans
+// [0, MaxIntensity]. Au-delà de 1, le niveau n'est plus calibré sur celui de
+// l'entrée et un signal très fort peut écrêter.
 //
 // Certains profils (Rock) ajoutent aussi un compresseur, puis une saturation
 // douce suivie d'un gain de sortie : leur dosage suit l'intensité (0 = aucun effet).
@@ -155,7 +161,7 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 	if sampleRate <= 0 || len(bands) == 0 || intensity <= 0 || math.IsNaN(intensity) {
 		return Equalizer(src, sampleRate, channels, nil)
 	}
-	intensity = math.Min(1, intensity)
+	intensity = math.Min(MaxIntensity, intensity)
 	for i := range bands {
 		bands[i].GainDB *= intensity
 	}

@@ -33,7 +33,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	var (
 		profile   = fs.String("profile", "", "profil à appliquer (voir -list)")
-		intensity = fs.Float64("intensity", 1, "intensité du profil, de 0 (aucun effet) à 1 (complet)")
+		intensity = fs.Float64("intensity", 1, fmt.Sprintf("intensité du profil : 0 = aucun effet, 1 = complet, jusqu'à %g pour l'exagérer", audioprofile.MaxIntensity))
 		rate      = fs.Int("rate", 44100, "fréquence d'échantillonnage en Hz (doit correspondre à celle de ffmpeg)")
 		channels  = fs.Int("channels", 2, "nombre de canaux (doit correspondre à celui de ffmpeg)")
 		list      = fs.Bool("list", false, "affiche les profils disponibles et quitte")
@@ -80,8 +80,8 @@ Options :
 	if *channels < 1 {
 		return fmt.Errorf("-channels doit être >= 1 (reçu %d)", *channels)
 	}
-	if *intensity < 0 || *intensity > 1 {
-		return fmt.Errorf("-intensity doit être dans [0, 1] (reçu %g)", *intensity)
+	if *intensity < 0 || *intensity > audioprofile.MaxIntensity {
+		return fmt.Errorf("-intensity doit être dans [0, %g] (reçu %g)", audioprofile.MaxIntensity, *intensity)
 	}
 	if isTerminal(stdin) {
 		return errors.New("aucune donnée sur l'entrée standard : utilisez un pipe (ffmpeg ... - | audioprofile ...) ou une redirection (< fichier.raw)")

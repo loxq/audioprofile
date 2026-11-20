@@ -111,10 +111,13 @@ func (c *compressor) apply(frame []float64) {
 	}
 }
 
-// scaleCompression met un réglage de compresseur à l'échelle d'une intensité
-// dans [0, 1] : le rapport passe de 1 (rien) à Ratio, la compensation suit.
+// scaleCompression met un réglage de compresseur à l'échelle d'une intensité :
+// le rapport passe de 1 (rien) à Ratio à intensité 1, puis continue de croître
+// au-delà. La compensation suit jusqu'à l'intensité 1 puis reste fixe : le gain
+// automatique du profil grandit avec l'effet, et une compensation qui grandirait
+// aussi dépasserait la marge disponible (écrêtage).
 func scaleCompression(c CompressorSettings, intensity float64) CompressorSettings {
 	c.Ratio = 1 + (c.Ratio-1)*intensity
-	c.MakeupDB *= intensity
+	c.MakeupDB *= math.Min(intensity, 1)
 	return c
 }
