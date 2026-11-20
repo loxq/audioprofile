@@ -13,8 +13,9 @@ Ce que le paquet `audioprofile` propose :
 - `TubeAmp` : **ampli à tubes simulé** (étages de saturation asymétriques en cascade, correcteur de timbre, baffle optionnel), avec les préréglages `AmpClean`, `AmpCrunch` et `AmpLead` ;
 - `BassBoost`, `MidBoost`, `TrebleBoost` : **préréglages à une bande** (basses, médiums, aigus) réglés par une simple intensité ;
 - `MeasureLoudness`, `LoudnessMeter` : **mesure de sonie** EBU R128 (intégrée en LUFS, plage en LU, crête), au fil de l'eau ;
+- `NormalizeLoudness` : **normalisation de sonie** (amène un morceau à −14 LUFS, par exemple, avec un limiteur sur les crêtes) ;
 - `MatchGains`, `ApplyGain`, `Alternate` : **comparaison A/B à sonie égale** (alterne l'original et le traité) ;
-- `audioprofile` (commande) : applique un profil ou un préréglage d'ampli sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`, , compare à l'oreille avec `-ab` et mesure la sonie avec `-loudness`.
+- `audioprofile` (commande) : applique un profil ou un préréglage d'ampli sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`, , compare à l'oreille avec `-ab` , mesure la sonie avec `-loudness` et la règle avec `-target-lufs`.
 
 Toutes ces fonctions prennent un `io.Reader` et en renvoient un autre : elles s'enchaînent, par exemple `TrebleBoost(MidBoost(BassBoost(src, …), …), …)`.
 
@@ -379,6 +380,28 @@ Mesure selon l'**UIT-R BS.1770-4** et l'**EBU R128**, la référence de la diffu
 - Tous les canaux ont le même poids : exact en mono et en stéréo, approché au-delà (la recommandation pondère les canaux d'ambiance de 5.1 et ignore le canal des basses).
 - **Recoupé avec ffmpeg** : sur deux signaux synthétiques à 48 kHz, l'écart avec le filtre `ebur128` de ffmpeg est de 0,007 LU sur la sonie intégrée et de 0,001 LU sur la plage ; sur les trois morceaux de `testdata/` et une sortie traitée, il est d'au plus 0,1 LU (sonie intégrée et plage), à l'arrondi de l'affichage près. Les coefficients du filtre à 48 kHz sont ceux de la table de la recommandation, à 10⁻⁹ près.
 
+### Normalisation de sonie
+
+```go
+type NormalizeOptions struct {
+	TargetLUFS float64 // sonie intégrée visée, dans [-70, 0]
+	CeilingDB  float64 // plafond des crêtes d'échantillon, dans [-40, 0] (0 = pleine échelle)
+	MaxBoostDB float64 // gain maximal accordé ; <= 0 → 24
+}
+
+func NormalizeLoudness(pcm []byte, sampleRate, channels int, o NormalizeOptions) ([]byte, NormalizeResult, error)
+```
+
+Amène la **sonie intégrée** d'un morceau à une cible, par exemple **−14 LUFS** (niveau de référence de nombreux services de streaming) ou **−23 LUFS** (diffusion EBU R128). Le signal reçoit un gain, puis le [limiteur](#limiteur) à `CeilingDB` (−1 dBFS en général) : les crêtes ne dépassent jamais le plafond. Le gain et le limiteur sont dans la même chaîne, en nombres flottants : un gain qui dépasse la pleine échelle n'est pas écrêté avant que le limiteur ne le voie.
+
+- **Itération** : le limiteur baisse un peu la sonie obtenue, donc le gain est corrigé et la sonie mesurée de nouveau, jusqu'à tomber à 0,1 LU de la cible (au plus 8 passes). Chaque passe repart du signal d'origine. Mesuré avec ffmpeg sur les trois morceaux de `testdata/`, à −14 et −23 LUFS : de −14,039 à −14,005 et de −23,007 à −23,005 LUFS.
+- **Baisser** n'a pas besoin du limiteur (si les crêtes restent sous le plafond) : le résultat est alors exactement le signal multiplié par un gain.
+- **Cible inatteignable** : le résultat le dit (`Reached`, `Reason`) et rend ce qui a été obtenu de plus proche, sans dépasser le plafond. Deux cas : un morceau très faible qui demanderait plus de `MaxBoostDB` de gain, et un plafond (ou des crêtes) qui empêche d'aller plus fort (le limiteur écraserait le morceau : on s'arrête quand le gain n'apporte plus de sonie).
+- `NormalizeResult` donne aussi la sonie `Before` et `After`, le gain appliqué, et si le limiteur est intervenu (`Limited`).
+- Silence, flux vide ou moins de 400 ms de signal : renvoyé tel quel, sans erreur (`Reason` explique). Une cible ou un plafond invalide (NaN, hors bornes) donne une erreur et le signal tel quel. L'entrée n'est jamais modifiée.
+- Le plafond porte sur les crêtes d'échantillon, **pas sur les crêtes inter-échantillons** (*true peak*) : visez −1 dBFS ou moins pour de la marge.
+- Travaille sur un tampon en mémoire.
+
 ### Comparaison A/B à sonie égale
 
 ```go
@@ -470,6 +493,8 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 | `-amp`        | —       | Préréglage d'ampli à tubes : `clean`, `crunch` ou `lead` (exclusif avec `-profile`) |
 | `-cabinet`    | `false` | Avec `-amp` : ajoute la simulation de baffle (son étouffé sur un morceau complet) |
 | `-intensity`  | `1`     | Profil ou ampli : `0` = aucun effet, `1` = réglage complet, jusqu'à `3` pour l'exagérer |
+| `-target-lufs` | —      | Amène la sonie intégrée de la sortie à cette valeur (de −70 à 0 LUFS) ; lit tout le flux |
+| `-ceiling`    | `-1`    | Avec `-target-lufs` : plafond des crêtes d'échantillon, en dBFS (de −40 à 0) |
 | `-loudness`   | `false` | Affiche sur la sortie d'erreur la sonie (intégrée, plage, crête) de l'original et du traité |
 | `-ab`         | `false` | Alterne l'original (A) et le traité (B), à sonie égale |
 | `-ab-seconds` | `5`     | Avec `-ab` : durée de chaque segment, en secondes |
@@ -488,7 +513,7 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 
 La sortie alterne l'**original (A)** pendant 5 s, puis le **traité (B)** pendant 5 s, et ainsi de suite, sur la même musique (on change de source, pas de position). `-ab-seconds` règle la durée des segments (`-ab-seconds 2` pour comparer plus vite). Avant de jouer, la commande affiche sur la sortie d'erreur la convention (A = original, B = traité), la durée des segments et **le gain appliqué** : le côté le plus fort est atténué pour que les deux aient la même sonie (LUFS, voir [`MatchGains`](#comparaison-ab-à-sonie-égale)).
 
-- **Le flux entier est lu et traité avant la première note** : il y a quelques secondes d'attente, et la mémoire utilisée est proportionnelle à la durée du morceau (environ 10 Mo par minute de stéréo à 44,1 kHz, deux fois : original et traité).
+- **Le flux entier est lu et traité avant la première note** : il y a quelques secondes d'attente, et la mémoire utilisée est proportionnelle à la durée du morceau (mesuré : 232 Mo pour un morceau de 3 min 51 s, soit environ 60 Mo par minute de stéréo à 44,1 kHz).
 - Fonctionne avec `-profile` comme avec `-amp`. Avec un profil sans effet (`flat`, ou intensité 0), la sortie est identique à l'entrée, bit à bit.
 - `-ab-seconds` sans `-ab` est une erreur.
 
@@ -508,6 +533,40 @@ Sonie (EBU R128)               original     traité
 ```
 
 Le tableau s'affiche sur la sortie d'erreur à la fin du flux ; la sortie audio n'est pas modifiée (octet pour octet). La mesure se fait au fil de l'eau, sans garder le morceau en mémoire. Pour ne garder que la mesure, envoyez la sortie dans `/dev/null` : `… | ./audioprofile -profile radio-hits -loudness > /dev/null`. Avec `-ab`, les deux flux entiers sont mesurés (pas l'alternance). Un « — » signale une mesure impossible (silence, moins de 400 ms de signal, moins de 3 s pour la plage).
+
+### Régler la sonie (`-target-lufs`)
+
+```sh
+# Amener un morceau à −14 LUFS (streaming), crêtes limitées à −1 dBFS
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -profile flat -target-lufs -14 \
+  | ffmpeg -f s16le -ar 44100 -ac 2 -i - musique_14lufs.wav
+
+# Un profil radio, puis la sonie réglée et affichée avant / après
+./audioprofile -profile radio-hits -target-lufs -16 -loudness < musique.raw > sortie.raw
+```
+
+Sortie d'erreur sur le morceau moyen de `testdata/` (`sample02`), pour la première commande puis pour la seconde (`radio-hits`, `-target-lufs -16 -loudness`) :
+
+```
+Normalisation : sonie intégrée -13.3 → -14.0 LUFS (cible -14.0), gain de -0.7 dB avant le limiteur à -1.0 dBFS, limiteur intervenu.
+```
+
+```
+Normalisation : sonie intégrée -10.6 → -16.0 LUFS (cible -16.0), gain de -5.4 dB avant le limiteur à -1.0 dBFS.
+Sonie (EBU R128)               original     traité
+  intégrée (LUFS)                 -13.3      -16.0
+  plage (LU)                        8.7        3.9
+  crête d'échantillon (dBFS)       -0.2       -6.4
+```
+
+Le « limiteur intervenu » de la première sortie vient des crêtes de ce morceau (−0,2 dBFS), plus hautes que le plafond de −1 dBFS : même en baissant la sonie de 0,7 dB, le limiteur retouche les pointes.
+
+La normalisation vient **après** le profil ou l'ampli : la sonie « avant » du résumé est celle du signal déjà traité. Avec `-profile flat`, c'est une simple normalisation. `-ceiling` règle le plafond des crêtes (−1 dBFS par défaut). Si la cible n'est pas atteignable, la sortie est la meilleure approche possible et le résumé l'explique : `Normalisation : cible de -3.0 LUFS non atteinte : -7.9 LUFS obtenus, à partir de -19.2 (le limiteur à -1 dBFS empêche d'aller plus fort).` (mesuré sur le morceau calme de `testdata/`).
+
+- **Le flux entier est lu avant d'écrire**, comme avec `-ab` : mémoire proportionnelle à la durée (mesuré : 247 Mo pour un morceau de 3 min 51 s), et seule la partie gain + limiteur est refaite à chaque passe de normalisation (le profil ou l'ampli ne tourne qu'une fois). `-loudness` seul, lui, reste au fil de l'eau (11 Mo).
+- `-target-lufs` et `-ab` sont exclusifs (`-ab` égalise déjà les sonies) ; `-ceiling` sans `-target-lufs` est une erreur.
+- Le plafond porte sur les crêtes d'échantillon, pas sur les crêtes inter-échantillons (*true peak*).
 
 **`-rate` et `-channels` doivent correspondre aux options `-ar` et `-ac` de ffmpeg** : le flux brut n'a pas d'en-tête, l'outil ne peut pas les deviner. Une valeur incorrecte ne provoque pas d'erreur mais donne un son faux (basses et aigus mal placés, canaux mélangés).
 
@@ -533,15 +592,19 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `multiband_test.go` | somme des bandes plate à ±0,1 dB (4 bandes, de 20 Hz à 18 kHz, séparations comprises — un test de mutation sans la compensation passe-tout le fait échouer), bandes indépendantes (aigus intacts quand seules les basses sont compressées, contre −20 dB en large bande), compensation par bande, réglages invalides = identité, détection liée et canal silencieux exactement silencieux, longueur conservée, lecture fragmentée identique, mise à l'échelle par l'intensité |
 | `profiles_radio_test.go` | les 7 profils radio existent, noms et `ParseProfile`, constantes existantes inchangées, niveau à −18 dBFS dans la fourchette mesurée de chacun, aucune crête au-dessus du plafond de −1 dBFS (7 profils × 4 intensités × 7 fréquences, mono et stéréo, signal à −0,1 dBFS), identité à intensité 0 / négative / NaN, longueur conservée, profil sans égalisation (`radio-natural`) qui agit quand même, élargissement du côté/milieu à la largeur du profil à 3 kHz et pas à 60 Hz, image de `radio-talk` inchangée, dynamique non écrasée (écart faible/fort conservé), basse fréquence d'échantillonnage |
 | `loudness_test.go` | coefficients de la pondération K à 48 kHz égaux à la table de l'UIT-R BS.1770-4 (10⁻⁹), gain de +0,69 dB à 1 kHz (44,1 / 48 / 96 kHz), étalonnage (X dBFS stéréo → X LUFS, mono −3,01 dB, à 44,1 / 48 / 96 kHz), accord avec ffmpeg `ebur128` sur deux signaux (±0,1 LU et ±1 LU), doubles portes (calme, silence numérique, niveau à −8 LU retenu), plage de sonie (stable ≈ 0, deux niveaux ≈ 10 LU), cas non valables (silence, vide, 200 ms, paramètres) sans `-Inf` ni `NaN`, morceaux de toute taille (octet par octet, 3 octets, 4097 octets, octet isolé) identiques, plusieurs canaux |
+| `normalize_test.go` | cible atteinte (monter, descendre, cas streaming ; ± 0,15 LU) avec plafond respecté et longueur conservée, baisse = simple gain (bit à bit), montée avec limiteur actif, cibles inatteignables (plafond trop bas, gain maximal, `MaxBoostDB`) avec raison et meilleur résultat sous le plafond, gains de plus de 24 dB répartis sur plusieurs bandes, idempotence, équilibre gauche/droite, silence / vide / 100 ms intacts, cibles et plafonds invalides (NaN, hors bornes) en erreur, entrée non modifiée |
 | `ab_test.go` | niveau efficace (sinus, silence numérique ignoré, paramètres invalides), gains qui égalisent les sonies sans jamais relever (traité plus fort, original plus fort, égaux, silence), sonie et non niveau efficace (basse contre 3 kHz), repli sur le niveau efficace sous 400 ms, `ApplyGain` (identité à 0 dB, −6 dB, écrêtage, copie, octet isolé), segments purs hors fondu, fondu linéaire monotone dans les deux sens, deux flux identiques bit à bit, entrelacement stéréo, longueur et paramètres invalides |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
-| `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
+| `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, `-target-lufs` (−14 / −23 / −30 mesurés sur la sortie, après un profil, avec `-loudness`, cible inatteignable, silence, toutes les erreurs d'options), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues
 
 - Pas de gestion des en-têtes WAV ni d'autres formats que s16le.
 - Les préréglages `BassBoost`, `MidBoost` et `TrebleBoost` ont leurs fréquences et leur gain maximal fixés dans le code (constantes `cutoffHz`, `midCenterHz`, `midQ`, `trebleCutoffHz` et `maxGainDB`) ; utiliser `Equalizer` pour les régler.
+- `-ab`, `-target-lufs` et `NormalizeLoudness` travaillent en mémoire : environ 60 Mo par minute de stéréo à 44,1 kHz (mesuré : 232 à 247 Mo pour un morceau de près de 4 minutes). Seuls les profils, `-loudness` et `MeasureLoudness` restent au fil de l'eau.
+- La mesure de sonie pèse tous les canaux de la même façon (exact en mono et en stéréo, approché pour du 5.1), et le plafond des crêtes porte sur les valeurs d'échantillons, pas sur les crêtes inter-échantillons (*true peak*).
+- Les paramètres des profils (dont `radio-*`) n'ont pas été recalibrés sur la sonie : leurs réglages restent ceux d'une calibration sur le niveau d'un sinus et sur le niveau efficace. La sonie « avant / après » se mesure avec `-loudness`, et `-target-lufs` ou `-ab` permettent de comparer à sonie égale.
 - Les profils `radio-*` n'ont pas été validés à l'oreille non plus. Leurs réglages sont des points de départ, calés par mesure sur trois morceaux : niveau, crête, plage dynamique et côté/milieu.
 - Les filtres de séparation du compresseur multibande sont à phase minimale, pas à phase linéaire. Le limiteur borne les crêtes d'échantillons (pas les crêtes inter-échantillons) et n'apporte pas de saturation ou d'écrêtage doux en plus.
 - Au-delà de l'intensité 1, le volume baisse et le niveau n'est plus calibré sur l'entrée ; un signal à pleine échelle (0 dBFS) peut écrêter plus largement qu'à l'intensité 1 (Pop, Vocal).

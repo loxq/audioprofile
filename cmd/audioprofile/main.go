@@ -34,17 +34,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("audioprofile", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		profile   = fs.String("profile", "", "profil d'égaliseur à appliquer (voir -list)")
-		amp       = fs.String("amp", "", "préréglage d'ampli à tubes à appliquer à la place d'un profil (voir -list-amps)")
-		cabinet   = fs.Bool("cabinet", false, "avec -amp : ajoute la simulation de baffle (son étouffé sur un morceau complet)")
-		intensity = fs.Float64("intensity", 1, fmt.Sprintf("intensité du profil ou de l'ampli : 0 = aucun effet, 1 = complet, jusqu'à %g pour l'exagérer", audioprofile.MaxIntensity))
-		ab        = fs.Bool("ab", false, "compare à l'oreille : alterne original et traité, à niveau égal (lit tout le flux avant de jouer, mémoire proportionnelle à la durée)")
-		abSeconds = fs.Float64("ab-seconds", 5, "avec -ab : durée de chaque segment, en secondes")
-		loudness  = fs.Bool("loudness", false, "affiche sur la sortie d'erreur la sonie (EBU R128 : intégrée, plage, crête) de l'original et du traité")
-		rate      = fs.Int("rate", 44100, "fréquence d'échantillonnage en Hz (doit correspondre à celle de ffmpeg)")
-		channels  = fs.Int("channels", 2, "nombre de canaux (doit correspondre à celui de ffmpeg)")
-		list      = fs.Bool("list", false, "affiche les profils disponibles et quitte")
-		listAmps  = fs.Bool("list-amps", false, "affiche les préréglages d'ampli disponibles et quitte")
+		profile    = fs.String("profile", "", "profil d'égaliseur à appliquer (voir -list)")
+		amp        = fs.String("amp", "", "préréglage d'ampli à tubes à appliquer à la place d'un profil (voir -list-amps)")
+		cabinet    = fs.Bool("cabinet", false, "avec -amp : ajoute la simulation de baffle (son étouffé sur un morceau complet)")
+		intensity  = fs.Float64("intensity", 1, fmt.Sprintf("intensité du profil ou de l'ampli : 0 = aucun effet, 1 = complet, jusqu'à %g pour l'exagérer", audioprofile.MaxIntensity))
+		ab         = fs.Bool("ab", false, "compare à l'oreille : alterne original et traité, à niveau égal (lit tout le flux avant de jouer, mémoire proportionnelle à la durée)")
+		abSeconds  = fs.Float64("ab-seconds", 5, "avec -ab : durée de chaque segment, en secondes")
+		targetLUFS = fs.Float64("target-lufs", 0, "amène la sonie intégrée de la sortie à cette valeur (LUFS, de -70 à 0 ; -14 : streaming, -23 : diffusion EBU R128), avec un limiteur sur les crêtes (lit tout le flux avant d'écrire)")
+		ceiling    = fs.Float64("ceiling", -1, "avec -target-lufs : plafond des crêtes d'échantillon en dBFS, de -40 à 0")
+		loudness   = fs.Bool("loudness", false, "affiche sur la sortie d'erreur la sonie (EBU R128 : intégrée, plage, crête) de l'original et du traité")
+		rate       = fs.Int("rate", 44100, "fréquence d'échantillonnage en Hz (doit correspondre à celle de ffmpeg)")
+		channels   = fs.Int("channels", 2, "nombre de canaux (doit correspondre à celui de ffmpeg)")
+		list       = fs.Bool("list", false, "affiche les profils disponibles et quitte")
+		listAmps   = fs.Bool("list-amps", false, "affiche les préréglages d'ampli disponibles et quitte")
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, `Usage : audioprofile (-profile NOM | -amp NOM) [options] < entrée.raw > sortie.raw
@@ -66,6 +68,8 @@ Comparer à l'oreille : -ab alterne l'original (A) et le traité (B) toutes les 
 égale (le plus fort est atténué). Lit tout le flux avant de jouer : mémoire proportionnelle
 à la durée, quelques secondes d'attente.
 Mesurer : -loudness affiche la sonie (EBU R128) avant et après, sur la sortie d'erreur.
+Régler la sonie : -target-lufs -14 amène la sortie à -14 LUFS (plafond des crêtes : -ceiling).
+Lit tout le flux avant d'écrire, comme -ab.
 
 Options :
 `)
@@ -109,6 +113,20 @@ Options :
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if set["ab-seconds"] && !*ab {
 		return errors.New("-ab-seconds ne s'utilise qu'avec -ab")
+	}
+	if set["ceiling"] && !set["target-lufs"] {
+		return errors.New("-ceiling ne s'utilise qu'avec -target-lufs")
+	}
+	if set["target-lufs"] {
+		if *ab {
+			return errors.New("-target-lufs et -ab sont exclusifs : -ab égalise déjà les sonies de l'original et du traité")
+		}
+		if math.IsNaN(*targetLUFS) || *targetLUFS < -70 || *targetLUFS > 0 {
+			return fmt.Errorf("-target-lufs doit être dans [-70, 0] (reçu %g)", *targetLUFS)
+		}
+		if math.IsNaN(*ceiling) || *ceiling < -40 || *ceiling > 0 {
+			return fmt.Errorf("-ceiling doit être dans [-40, 0] (reçu %g)", *ceiling)
+		}
 	}
 	var (
 		p      audioprofile.Profile
@@ -157,6 +175,12 @@ Options :
 		}
 		return out.Flush()
 	}
+	if set["target-lufs"] {
+		if err := runNormalize(out, stderr, stdin, process, *rate, *channels, audioprofile.NormalizeOptions{TargetLUFS: *targetLUFS, CeilingDB: *ceiling}, *loudness); err != nil {
+			return err
+		}
+		return out.Flush()
+	}
 	var src io.Reader = stdin
 	var dst io.Writer = out
 	var inMeter, outMeter *audioprofile.LoudnessMeter
@@ -176,6 +200,48 @@ Options :
 		printLoudness(stderr, inMeter.Loudness(), outMeter.Loudness())
 	}
 	return nil
+}
+
+// runNormalize lit tout le flux, le traite, amène la sonie du résultat à la cible (avec un limiteur
+// sur les crêtes) et écrit le tout. Le résumé va sur la sortie d'erreur.
+func runNormalize(out io.Writer, stderr io.Writer, stdin io.Reader, process func(io.Reader) io.Reader, rate, channels int, opts audioprofile.NormalizeOptions, loudness bool) error {
+	orig, err := io.ReadAll(stdin)
+	if err != nil {
+		return fmt.Errorf("lecture : %w", err)
+	}
+	orig = orig[:len(orig)-len(orig)%(channels*2)] // trames entières
+	proc, err := io.ReadAll(process(bytes.NewReader(orig)))
+	if err != nil {
+		return fmt.Errorf("traitement : %w", err)
+	}
+	final, res, err := audioprofile.NormalizeLoudness(proc, rate, channels, opts)
+	if err != nil {
+		return fmt.Errorf("normalisation : %w", err)
+	}
+	switch {
+	case !res.Before.Valid:
+		fmt.Fprintf(stderr, "Normalisation : %s.\n", res.Reason)
+	case res.Reached:
+		fmt.Fprintf(stderr, "Normalisation : sonie intégrée %.1f → %.1f LUFS (cible %.1f), gain de %+.1f dB avant le limiteur à %.1f dBFS%s.\n",
+			res.Before.IntegratedLUFS, res.After.IntegratedLUFS, opts.TargetLUFS, res.GainDB, opts.CeilingDB, limitedNote(res.Limited))
+	default:
+		fmt.Fprintf(stderr, "Normalisation : cible de %.1f LUFS non atteinte : %.1f LUFS obtenus, à partir de %.1f (%s).\n",
+			opts.TargetLUFS, res.After.IntegratedLUFS, res.Before.IntegratedLUFS, res.Reason)
+	}
+	if loudness {
+		lo, _ := audioprofile.MeasureLoudness(bytes.NewReader(orig), rate, channels)
+		lf, _ := audioprofile.MeasureLoudness(bytes.NewReader(final), rate, channels)
+		printLoudness(stderr, lo, lf)
+	}
+	_, err = out.Write(final)
+	return err
+}
+
+func limitedNote(limited bool) string {
+	if limited {
+		return ", limiteur intervenu"
+	}
+	return ""
 }
 
 // printLoudness affiche la sonie de l'original et du traité, sur deux colonnes.

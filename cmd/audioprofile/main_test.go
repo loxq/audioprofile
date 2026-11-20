@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/loxq/audioprofile"
 )
 
 func pcm(freq float64, n, channels int) []byte {
@@ -438,5 +440,131 @@ func TestOutputToDevNullIsAllowed(t *testing.T) {
 	}
 	if isTerminal(null) {
 		t.Error("/dev/null n'est pas un terminal")
+	}
+}
+
+// music : deux sinus à des niveaux différents, assez longs (6 s) pour avoir une sonie intégrée.
+func music(amp1, amp2 float64) []byte {
+	const n = 6 * 44100
+	buf := new(bytes.Buffer)
+	for i := 0; i < n; i++ {
+		t := float64(i) / 44100
+		l := int16(amp1*math.Sin(2*math.Pi*220*t) + amp2*math.Sin(2*math.Pi*2000*t))
+		r := int16(amp1*math.Sin(2*math.Pi*330*t) + amp2*math.Sin(2*math.Pi*3000*t))
+		binary.Write(buf, binary.LittleEndian, l)
+		binary.Write(buf, binary.LittleEndian, r)
+	}
+	return buf.Bytes()
+}
+
+func loudnessOf(t *testing.T, b []byte) audioprofile.Loudness {
+	t.Helper()
+	l, err := audioprofile.MeasureLoudness(bytes.NewReader(b), 44100, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+func TestTargetLUFS(t *testing.T) {
+	in := music(1500, 700)
+	for _, target := range []string{"-14", "-23", "-30"} {
+		out, errOut, err := runCLI(t, in, "-profile", "flat", "-target-lufs", target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != len(in) {
+			t.Fatalf("longueur %d, attendu %d", len(out), len(in))
+		}
+		want, _ := strconv.ParseFloat(target, 64)
+		l := loudnessOf(t, []byte(out))
+		if math.Abs(l.IntegratedLUFS-want) > 0.15 {
+			t.Errorf("cible %s : %.2f LUFS obtenus", target, l.IntegratedLUFS)
+		}
+		if !strings.Contains(errOut, "Normalisation : sonie intégrée") || !strings.Contains(errOut, "cible "+target+".0") {
+			t.Errorf("résumé attendu dans %q", errOut)
+		}
+		for _, v := range samplesOf(out) {
+			if math.Abs(float64(v)) > 29205 {
+				t.Fatalf("crête %d au-dessus du plafond par défaut de -1 dBFS", v)
+			}
+		}
+	}
+}
+
+// Avec un profil : la normalisation vient après le traitement, et le tableau -loudness compare
+// l'original à la sortie normalisée.
+func TestTargetLUFSAfterProfileAndWithLoudness(t *testing.T) {
+	in := music(1500, 700)
+	out, errOut, err := runCLI(t, in, "-profile", "radio-hits", "-target-lufs", "-16", "-loudness")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := loudnessOf(t, []byte(out)); math.Abs(l.IntegratedLUFS+16) > 0.2 {
+		t.Errorf("%.2f LUFS, attendu -16", l.IntegratedLUFS)
+	}
+	if !strings.Contains(errOut, "Normalisation") || !strings.Contains(errOut, "Sonie (EBU R128)") {
+		t.Errorf("résumé et tableau attendus dans %q", errOut)
+	}
+}
+
+func TestTargetLUFSUnreachableAndSilent(t *testing.T) {
+	// plafond trop bas : la cible n'est pas atteinte, et on le dit
+	out, errOut, err := runCLI(t, music(3000, 0), "-profile", "flat", "-target-lufs", "-5", "-ceiling", "-20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut, "non atteinte") || !strings.Contains(errOut, "limiteur") {
+		t.Errorf("« non atteinte » et la raison attendus dans %q", errOut)
+	}
+	for _, v := range samplesOf(out) {
+		if math.Abs(float64(v)) > 3277+1 { // -20 dBFS
+			t.Fatalf("crête %d au-dessus du plafond de -20 dBFS", v)
+		}
+	}
+	// silence : sortie identique, message clair
+	silent := make([]byte, 4*44100*2)
+	out, errOut, err = runCLI(t, silent, "-profile", "flat", "-target-lufs", "-14")
+	if err != nil || out != string(silent) || !strings.Contains(errOut, "silencieux") || strings.Contains(errOut, "NaN") || strings.Contains(errOut, "Inf") {
+		t.Errorf("silence : err=%v, identique=%v, %q", err, out == string(silent), errOut)
+	}
+}
+
+func TestTargetLUFSFlagErrors(t *testing.T) {
+	in := music(1500, 700)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-profile", "rock", "-target-lufs", "NaN"}, "-target-lufs doit être dans [-70, 0]"},
+		{[]string{"-profile", "rock", "-target-lufs", "-90"}, "-target-lufs doit être dans [-70, 0]"},
+		{[]string{"-profile", "rock", "-target-lufs", "5"}, "-target-lufs doit être dans [-70, 0]"},
+		{[]string{"-profile", "rock", "-target-lufs", "+Inf"}, "-target-lufs doit être dans [-70, 0]"},
+		{[]string{"-profile", "rock", "-target-lufs", "-14", "-ceiling", "3"}, "-ceiling doit être dans [-40, 0]"},
+		{[]string{"-profile", "rock", "-target-lufs", "-14", "-ceiling", "NaN"}, "-ceiling doit être dans [-40, 0]"},
+		{[]string{"-profile", "rock", "-target-lufs", "-14", "-ceiling", "-80"}, "-ceiling doit être dans [-40, 0]"},
+		{[]string{"-profile", "rock", "-ceiling", "-2"}, "-ceiling ne s'utilise qu'avec -target-lufs"},
+		{[]string{"-profile", "rock", "-ab", "-target-lufs", "-14"}, "-target-lufs et -ab sont exclusifs"},
+	} {
+		_, _, err := runCLI(t, in, tc.args...)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
+	}
+}
+
+// Sans -target-lufs, la sortie est inchangée : les nouvelles options n'ont aucun effet par défaut.
+func TestNoTargetLeavesOutputUnchanged(t *testing.T) {
+	in := music(1500, 700)
+	a, _, err := runCLI(t, in, "-profile", "rock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, _ := runCLI(t, in, "-profile", "rock", "-loudness")
+	if a != b {
+		t.Error("-loudness ne doit pas changer la sortie")
+	}
+	if a == string(in) {
+		t.Error("rock doit modifier le signal")
 	}
 }
