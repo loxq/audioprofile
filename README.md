@@ -1,37 +1,46 @@
 # audioprofile
 
-Preuve de concept en Go d'un **égaliseur trois bandes (basses / médiums / aigus)** appliqué à un flux audio PCM, au fil de l'eau.
+Bibliothèque Go (et petit outil en ligne de commande) pour donner une couleur à un flux audio PCM : égaliseur, profils de genre (Rock, Pop, Jazz…), compresseur et saturation douce. Tout se fait **au fil de l'eau** sur des `io.Reader`, sans charger le fichier en mémoire.
 
-Le paquet `audioprofile` expose trois fonctions qui enveloppent un `io.Reader` PCM et renvoient un autre `io.Reader` :
+Ce que le paquet `audioprofile` propose :
 
-- `BassBoost` : renforce ou atténue les **basses** ;
-- `MidBoost` : renforce ou atténue les **fréquences intermédiaires** (médiums) ;
-- `TrebleBoost` : renforce ou atténue les **aigus**.
-
+- `ApplyProfile` : applique un **profil prédéfini** (Rock, Pop, Classical, Jazz, HipHop, Electronic, Acoustic, Vocal) avec une intensité réglable ;
+- `Equalizer` : **égaliseur paramétrique** à bandes libres (type, fréquence, gain en dB, Q) ;
 - `Compressor` : **compresseur de dynamique** (seuil, ratio, attaque, relâchement, genou, compensation) ;
-- `ApplyProfile` : applique un **profil prédéfini** (Rock, Pop, Classique, Jazz…) avec une intensité réglable ;
-- `Equalizer` : **égaliseur paramétrique** à bandes libres (type, fréquence, gain en dB, Q), appliquées en une seule passe.
+- `BassBoost`, `MidBoost`, `TrebleBoost` : **préréglages à une bande** (basses, médiums, aigus) réglés par une simple intensité ;
+- `audioprofile` (commande) : applique un profil sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`.
 
-`BassBoost`, `MidBoost` et `TrebleBoost` sont des préréglages à une bande, réglés par une simple intensité. Toutes ces fonctions sont chaînables : `TrebleBoost(MidBoost(BassBoost(src, ...), ...), ...)`. Pour plusieurs bandes, `Equalizer` est plus efficace (une seule boucle sur les échantillons).
+Toutes ces fonctions prennent un `io.Reader` et en renvoient un autre : elles s'enchaînent, par exemple `TrebleBoost(MidBoost(BassBoost(src, …), …), …)`.
 
-## Fonctionnement
+## Démarrage rapide
 
-- Filtres biquad (formules du *RBJ Audio EQ Cookbook*, pente S = 1), forme directe II transposée :
-  - `BassBoost` : **low-shelf** à **120 Hz** ;
-  - `MidBoost` : filtre en **cloche** (peaking) centré à **1 kHz**, Q = 0,7 (large, environ 2 octaves) ;
-  - `TrebleBoost` : **high-shelf** à **4 kHz**.
-- Gain maximal : **±15 dB** (atteint pour une intensité de ±1).
-- Un état de filtre par canal, donc compatible mono, stéréo et multicanal.
-- Traitement en flux : lecture par blocs de 4096 trames, sans charger le fichier entier en mémoire.
-- Écrêtage des échantillons à l'intervalle 16 bits pour éviter tout débordement d'entier.
+```sh
+git clone https://github.com/loxq/audioprofile && cd audioprofile
+go build -o audioprofile ./cmd/audioprofile
+
+# Écouter un morceau avec le profil rock
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -profile rock \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+```
+
+Les profils disponibles s'affichent avec `./audioprofile -list`. Détails dans [Ligne de commande](#ligne-de-commande).
 
 ## Format d'entrée / sortie
 
-PCM **16 bits signé, little-endian, entrelacé** (s16le). Aucun en-tête n'est géré : ni WAV, ni autre conteneur. Seules les données brutes sont attendues.
+PCM **16 bits signé, little-endian, entrelacé** (s16le). Aucun en-tête n'est géré : ni WAV, ni autre conteneur, seulement les données brutes. Une éventuelle trame incomplète en fin de flux est ignorée.
 
-Une éventuelle trame incomplète en fin de flux est ignorée.
+Tous les points d'entrée prennent les mêmes paramètres de base :
 
-## Utilisation
+| Paramètre    | Description                                                              |
+|--------------|--------------------------------------------------------------------------|
+| `src`        | Flux PCM s16le entrelacé                                                 |
+| `sampleRate` | Fréquence d'échantillonnage en Hz (ex. `44100`)                          |
+| `channels`   | Nombre de canaux (1 = mono, 2 = stéréo…). Une valeur < 1 est ramenée à 1 |
+
+Si `sampleRate <= 0`, le flux est renvoyé tel quel. Un état de filtre est tenu par canal, donc mono, stéréo et multicanal fonctionnent.
+
+## Bibliothèque
 
 ```go
 package main
@@ -47,32 +56,51 @@ func main() {
 	in, _ := os.Open("musique.raw") // s16le, 44,1 kHz, stéréo
 	defer in.Close()
 
-	out, _ := os.Create("musique_boost.raw")
+	out, _ := os.Create("musique_rock.raw")
 	defer out.Close()
 
-	// +0.8 : basses fortement renforcées
-	io.Copy(out, audioprofile.BassBoost(in, 44100, 2, 0.8))
+	io.Copy(out, audioprofile.ApplyProfile(in, 44100, 2, audioprofile.Rock, 0.8))
 }
 ```
 
-### Signatures
+### Profils prédéfinis
 
 ```go
-func BassBoost(src io.Reader, sampleRate, channels int, intensity float64) io.Reader
-func MidBoost(src io.Reader, sampleRate, channels int, intensity float64) io.Reader
-func TrebleBoost(src io.Reader, sampleRate, channels int, intensity float64) io.Reader
+func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity float64) io.Reader
 ```
 
-Les paramètres sont identiques pour les trois fonctions.
+| Profil       | Nom (`ParseProfile`) | Caractère                                          |
+|--------------|----------------------|----------------------------------------------------|
+| `Flat`       | `flat`               | Aucune correction                                  |
+| `Rock`       | `rock`               | Sourire : basses et aigus relevés, médiums creusés |
+| `Pop`        | `pop`                | Voix en avant, basses et brillance modérées        |
+| `Classical`  | `classical`          | Naturel, léger renfort des extrêmes                |
+| `Jazz`       | `jazz`               | Chaud, médiums doux, aigus aérés                   |
+| `HipHop`     | `hiphop`             | Basses profondes, voix détachée                    |
+| `Electronic` | `electronic`         | Sub-basses et aigus marqués, médiums creusés       |
+| `Acoustic`   | `acoustic`           | Naturel, présence des cordes et de l'air           |
+| `Vocal`      | `vocal`              | Voix : intelligibilité, graves réduits             |
 
-| Paramètre    | Description                                                                                  |
-|--------------|----------------------------------------------------------------------------------------------|
-| `src`        | Flux PCM s16le entrelacé                                                                     |
-| `sampleRate` | Fréquence d'échantillonnage en Hz (ex. `44100`)                                              |
-| `channels`   | Nombre de canaux (1 = mono, 2 = stéréo…). Une valeur < 1 est ramenée à 1                     |
-| `intensity`  | De `-1.0` (bande −15 dB) à `+1.0` (bande +15 dB). `0` = signal inchangé. Valeurs hors intervalle ramenées dans `[-1, 1]` |
+- **Intensité** : de `0` (aucun effet) à `1` (profil complet) ; elle met à l'échelle les gains, le ratio du compresseur et le drive de la saturation. Les valeurs hors de cet intervalle sont ramenées dedans.
+- **Gain automatique** : pour éviter l'écrêtage, un gain global négatif est ajouté afin que la fréquence la plus renforcée reste à 0 dB. Le volume perçu baisse donc d'autant, sauf pour les profils avec effets (voir plus bas).
+- **Chaîne de traitement** : égalisation → compresseur → saturation → gain de sortie. Les deux derniers étages ne concernent que certains profils.
+- **Valeurs** : les courbes sont des points de départ raisonnables, pas une norme (il n'existe pas de standard officiel). Elles sont définies dans [profiles.go](profiles.go).
+- **Utilitaires** : `Profiles()` liste les profils, `ParseProfile("rock")` en retrouve un par son nom (insensible à la casse), `p.String()` donne son nom, et `p.Bands()` renvoie une copie de ses bandes d'égalisation pour partir d'elles avec `Equalizer`.
 
-Si `intensity == 0` ou `sampleRate <= 0`, le flux est renvoyé tel quel (pas de filtrage). C'est aussi le cas quand la fréquence de coupure dépasse Nyquist (pour `TrebleBoost`, `sampleRate < 8000`).
+#### Effets dynamiques par profil
+
+| Profil       | Compresseur (seuil, ratio, attaque / relâchement, compensation) | Saturation (drive / gain de sortie) | Pourquoi |
+|--------------|------------------------------------------------------------------|-------------------------------------|----------|
+| `Rock`       | −20 dBFS, 3:1, 10 / 120 ms, 0 dB                                 | +6 dB / −1 dB                       | densité et grain |
+| `Pop`        | −20 dBFS, 2,5:1, 15 / 150 ms, +2,5 dB                            | —                                   | genre très compressé, mais propre |
+| `HipHop`     | −20 dBFS, 3:1, 20 / 100 ms, +1,5 dB                              | +3 dB / 0 dB                        | attaque lente pour garder le punch, chaleur des basses |
+| `Electronic` | −20 dBFS, 4:1, 5 / 80 ms, +1,5 dB                                | +3 dB / 0 dB                        | son dense et serré |
+| `Vocal`      | −22 dBFS, 3:1, 5 / 150 ms, +3 dB                                 | —                                   | régularité et intelligibilité de la voix |
+| `Jazz`       | —                                                                | +2 dB / 0 dB                        | chaleur légère sans écraser la dynamique |
+
+`Flat`, `Classical` et `Acoustic` gardent la dynamique d'origine. Tous les compresseurs ont un genou de 6 dB.
+
+La compensation du compresseur et la saturation relèvent le niveau pour contrebalancer la baisse du gain automatique : à −18 dBFS et 1 kHz, chaque profil avec effets rend le niveau d'entrée à moins de 0,4 dB près. La saturation (tangente hyperbolique normalisée) arrondit les pics et ajoute des harmoniques impaires. Son effet est surtout audible dans les basses, car le gain automatique compense le drive là où l'égalisation est sous son pic. Les réglages sont dans `profileCompression` et `profileSaturation` ([profiles.go](profiles.go)).
 
 ### Égaliseur paramétrique
 
@@ -80,7 +108,7 @@ Si `intensity == 0` ou `sampleRate <= 0`, le flux est renvoyé tel quel (pas de 
 func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader
 
 type Band struct {
-	Type   BandType // LowShelf, Peaking ou HighShelf
+	Type   BandType // LowShelf, Peaking, HighShelf ou Gain
 	FreqHz float64  // fréquence de coupure (shelf) ou centrale (peaking)
 	GainDB float64  // gain en dB, ramené dans [-24, +24]
 	Q      float64  // facteur de qualité ; <= 0 → 1/√2
@@ -99,37 +127,11 @@ rock := []audioprofile.Band{
 io.Copy(out, audioprofile.Equalizer(in, 44100, 2, rock))
 ```
 
-- **Q** : plus il est grand, plus la bande est étroite. Pour une cloche (`Peaking`), le gain demandé est atteint exactement à la fréquence centrale quel que soit Q.
-- Les bandes sans effet (gain nul ou NaN, fréquence <= 0 ou >= Nyquist) sont ignorées. S'il n'en reste aucune, le flux est renvoyé tel quel.
-- Les bandes sont appliquées dans l'ordre, en série.
-
-### Profils prédéfinis
-
-```go
-func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity float64) io.Reader
-```
-
-```go
-io.Copy(out, audioprofile.ApplyProfile(in, 44100, 2, audioprofile.Rock, 0.8))
-```
-
-| Profil       | Nom (`ParseProfile`) | Caractère                                              |
-|--------------|----------------------|--------------------------------------------------------|
-| `Flat`       | `flat`               | Aucune correction                                      |
-| `Rock`       | `rock`               | Sourire : basses et aigus relevés, médiums creusés     |
-| `Pop`        | `pop`                | Voix en avant, basses et brillance modérées            |
-| `Classical`  | `classical`          | Naturel, léger renfort des extrêmes                    |
-| `Jazz`       | `jazz`               | Chaud, médiums doux, aigus aérés                       |
-| `HipHop`     | `hiphop`             | Basses profondes, voix détachée                        |
-| `Electronic` | `electronic`         | Sub-basses et aigus marqués, médiums creusés           |
-| `Acoustic`   | `acoustic`           | Naturel, présence des cordes et de l'air               |
-| `Vocal`      | `vocal`              | Voix : intelligibilité, graves réduits                 |
-
-- **Intensité** : de `0` (aucun effet) à `1` (profil complet) ; elle met les gains à l'échelle. Les valeurs hors de cet intervalle sont ramenées dedans.
-- **Gain automatique** : pour éviter l'écrêtage, un gain global négatif est ajouté afin que la fréquence la plus renforcée reste à 0 dB. Le volume perçu baisse donc d'autant, à compenser en aval si besoin.
-- **Effets dynamiques** : certains profils ajoutent, après l'égalisation, un compresseur puis une saturation douce avec gain de sortie (voir plus bas). Leur dosage suit l'intensité : le ratio va de 1:1 au ratio du profil, et le drive de 0 dB à sa valeur. Les profils qui ne figurent pas dans le tableau (Flat, Classical, Acoustic) gardent la dynamique d'origine.
-- **Valeurs** : les courbes sont des points de départ raisonnables, pas une norme (il n'existe pas de standard officiel). Elles sont définies dans [profiles.go](profiles.go).
-- **Utilitaires** : `Profiles()` liste les profils, `ParseProfile("rock")` en retrouve un par son nom (utile pour un flag CLI), et `p.Bands()` renvoie les bandes d'un profil pour partir de lui avec `Equalizer`.
+- **Types** : `LowShelf` et `HighShelf` agissent sous / au-dessus de `FreqHz` ; `Peaking` est une cloche centrée sur `FreqHz` ; `Gain` est un gain global sur tout le spectre (`FreqHz` et `Q` sont ignorés).
+- **Q** : plus il est grand, plus la bande est étroite. Pour une cloche, le gain demandé est atteint exactement à la fréquence centrale quel que soit Q.
+- Les bandes sont appliquées dans l'ordre, en série, en une seule passe sur les échantillons.
+- Sont ignorées les bandes sans effet : gain nul ou NaN, ou (hors `Gain`) fréquence <= 0 ou >= Nyquist. S'il n'en reste aucune, le flux est renvoyé tel quel.
+- Filtres biquad en forme directe II transposée (formules du *RBJ Audio EQ Cookbook*).
 
 ### Compresseur
 
@@ -154,25 +156,27 @@ io.Copy(out, audioprofile.Compressor(in, 44100, 2, audioprofile.CompressorSettin
 
 - Le niveau est détecté sur la **crête du canal le plus fort** de chaque trame, et le **même gain** est appliqué à tous les canaux (détection liée) : l'image stéréo est conservée.
 - Le gain est calculé en dB (genou quadratique), puis lissé : attaque quand la réduction augmente, relâchement quand elle diminue.
-- Sans effet (flux renvoyé tel quel) si `sampleRate <= 0`, ou si `Ratio <= 1` et `MakeupDB = 0`.
-- Dans `ApplyProfile`, la chaîne est : égalisation → compresseur → saturation → gain de sortie.
+- Sans effet (flux renvoyé tel quel) si `Ratio <= 1` et `MakeupDB = 0`.
 
-#### Effets dynamiques par profil
+### Préréglages à une bande
 
-| Profil       | Compresseur (seuil, ratio, attaque / relâchement, compensation) | Saturation (drive / gain de sortie) | Pourquoi |
-|--------------|------------------------------------------------------------------|-------------------------------------|----------|
-| `Rock`       | −20 dBFS, 3:1, 10 / 120 ms, 0 dB                                 | +6 dB / −1 dB                       | densité et grain |
-| `Pop`        | −20 dBFS, 2,5:1, 15 / 150 ms, +2,5 dB                            | —                                   | genre très compressé, mais propre |
-| `HipHop`     | −20 dBFS, 3:1, 20 / 100 ms, +1,5 dB                              | +3 dB / 0 dB                        | attaque lente pour garder le punch, chaleur des basses |
-| `Electronic` | −20 dBFS, 4:1, 5 / 80 ms, +1,5 dB                                | +3 dB / 0 dB                        | son dense et serré |
-| `Vocal`      | −22 dBFS, 3:1, 5 / 150 ms, +3 dB                                 | —                                   | régularité et intelligibilité de la voix |
-| `Jazz`       | —                                                                | +2 dB / 0 dB                        | chaleur légère sans écraser la dynamique |
+```go
+func BassBoost(src io.Reader, sampleRate, channels int, intensity float64) io.Reader
+func MidBoost(src io.Reader, sampleRate, channels int, intensity float64) io.Reader
+func TrebleBoost(src io.Reader, sampleRate, channels int, intensity float64) io.Reader
+```
 
-Tous ont un genou de 6 dB. La compensation du compresseur et la saturation relèvent le niveau pour contrebalancer la baisse du gain automatique : à −18 dBFS et 1 kHz, chaque profil avec effets rend le niveau d'entrée à moins de 0,4 dB près. La saturation, tangente hyperbolique normalisée, arrondit les pics et ajoute des harmoniques impaires ; son effet est surtout audible dans les basses, car le gain automatique compense le drive là où l'égalisation est sous son pic. Les réglages sont dans `profileCompression` et `profileSaturation` ([profiles.go](profiles.go)).
+| Fonction      | Filtre                                          |
+|---------------|-------------------------------------------------|
+| `BassBoost`   | low-shelf à **120 Hz**                          |
+| `MidBoost`    | cloche (peaking) à **1 kHz**, Q = 0,7 (large, environ 2 octaves) |
+| `TrebleBoost` | high-shelf à **4 kHz**                          |
 
-## Ligne de commande : `audioprofile`
+`intensity` va de `-1.0` (bande −15 dB) à `+1.0` (bande +15 dB) ; `0` = signal inchangé, et les valeurs hors intervalle sont ramenées dans `[-1, 1]`. Pour `TrebleBoost`, le flux est renvoyé tel quel si la coupure dépasse Nyquist (`sampleRate < 8000`).
 
-Petit outil ([cmd/audioprofile](cmd/audioprofile/main.go)) pour tester les profils sur un vrai fichier. Il lit du PCM s16le sur l'entrée standard et écrit le résultat sur la sortie standard, donc il se place directement dans un pipe avec ffmpeg.
+## Ligne de commande
+
+L'outil ([cmd/audioprofile](cmd/audioprofile/main.go)) lit du PCM s16le sur l'entrée standard et écrit le résultat sur la sortie standard, donc il se place directement dans un pipe avec ffmpeg.
 
 ```sh
 go build -o audioprofile ./cmd/audioprofile    # ou : go run ./cmd/audioprofile ...
@@ -208,34 +212,25 @@ L'outil refuse de lire sur un terminal sans pipe ni redirection, et d'écrire du
 ## Tests
 
 ```sh
-go test -v ./...
+go test ./...
 ```
 
-Le CLI a ses propres tests dans [cmd/audioprofile](cmd/audioprofile/main_test.go) (liste, traitement, identité de `flat`, mono/rate, erreurs, entrée vide).
+Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain réel obtenu à chaque fréquence :
 
-Les tests vérifient notamment :
+| Fichier | Ce qui est vérifié |
+|---------|--------------------|
+| `bassboost_test.go`, `midboost_test.go`, `trebleboost_test.go` | gains et atténuations des préréglages, signal intact à intensité nulle ou au-delà de Nyquist |
+| `equalizer_test.go` | courbe multibande (gains à moins de 0,7 dB), effet de Q, bandes ignorées, limitation à ±24 dB, lecture fragmentée identique à une lecture en un bloc |
+| `dynamics_test.go` | courbe statique du compresseur, genou doux, attaque / relâchement progressifs, détection liée stéréo, coude franc sans NaN, compensation seule, mise à l'échelle par l'intensité |
+| `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire), harmoniques impaires uniquement, croissance avec l'intensité, niveau de Rock, pas d'écrêtage |
+| `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre |
+| `cmd/audioprofile/main_test.go` | liste, traitement, identité de `flat`, mono et fréquence, erreurs, entrée vide |
 
-- **TestGain** : un sinus à 40 Hz est fortement amplifié, un sinus à 5 kHz reste quasi inchangé.
-- **TestCut** : avec une intensité négative, les graves sont atténués, les aigus inchangés.
-- **TestZeroIsIdentity** : une intensité de 0 laisse le signal intact.
-- **TestStereoOddChunks** : le recollage des trames fonctionne avec des lectures fragmentées en stéréo.
-- **TestEqualizerMultiBand** : une courbe à quatre bandes donne les gains attendus à chaque fréquence (à moins de 0,7 dB).
-- **TestEqualizerQ**, **TestEqualizerIgnoredBands**, **TestEqualizerGainClamped**, **TestEqualizerStereoOddChunks** : effet de Q, bandes ignorées, limitation du gain à ±24 dB, lecture fragmentée identique à une lecture en un bloc.
-- **TestCompressor\*** / **TestScaleCompression** / **TestRockCompressesDynamics** : courbe statique (gains attendus sous, au et au-dessus du seuil), genou doux, attaque et relâchement progressifs, détection liée stéréo, coude franc sans NaN, compensation seule, lecture fragmentée, mise à l'échelle par l'intensité, effet réel sur Rock.
-- **TestSaturator\*** / **TestSaturation\*** / **TestRock\*** / **TestSaturatedOutputNeverClips** : forme de la saturation (pleine échelle conservée, monotone, impaire), harmoniques impaires uniquement, croissance avec l'intensité, niveau de Rock proche de l'entrée, pas d'écrêtage sur un signal très fort.
-- **TestProfilesLevelNearUnity**, **TestProfilesNoClipping** : niveau des profils avec effets proche de l'entrée à −18 dBFS, aucun écrêtage à −3 dBFS sur tout le spectre.
-- **TestProfile\*** : noms et `ParseProfile`, profils identiques au signal d'origine (`Flat`, intensité nulle), pic à 0 dB après compensation, forme de la courbe (Rock en « sourire », Vocal, HipHop), lecture fragmentée.
-- **TestMidGain** : `MidBoost` agit à 1 kHz sans toucher 40 Hz ni 15 kHz.
-- **TestMidZeroIsIdentity** : intensité nulle = signal intact.
-- **TestTrebleGain** : `TrebleBoost` amplifie/atténue un sinus à 12 kHz sans toucher un sinus à 100 Hz.
-- **TestTrebleZeroIsIdentity**, **TestTrebleLowSampleRateIsIdentity** : signal intact si l'effet est nul ou si la coupure dépasse Nyquist.
-
-## Limites connues (POC)
+## Limites connues
 
 - Pas de gestion des en-têtes WAV ni d'autres formats que s16le.
 - Les préréglages `BassBoost`, `MidBoost` et `TrebleBoost` ont leurs fréquences et leur gain maximal fixés dans le code (constantes `cutoffHz`, `midCenterHz`, `midQ`, `trebleCutoffHz` et `maxGainDB`) ; utiliser `Equalizer` pour les régler.
-- Les profils réduisent le volume (gain automatique anti-écrêtage) ; les profils avec effets le compensent en partie (voir le tableau). Il n'y a pas de limiteur à anticipation (look-ahead) : pendant le temps d'attaque du compresseur, un pic très bref passe, la saturation de Rock l'arrondit ensuite.
-- Sans anticipation, un signal à pleine échelle (0 dBFS) dès son premier échantillon peut écrêter brièvement sur Pop et Vocal, avant que l'attaque du compresseur ne réagisse (quelques échantillons). À −3 dBFS, aucun profil n'écrête.
+- Les réglages des profils n'ont pas été validés à l'oreille : ils sont vérifiés par mesure (forme des courbes, niveaux) mais restent des points de départ à affiner.
+- Le compresseur n'a pas d'anticipation (look-ahead) et il n'y a pas de limiteur : un pic très bref passe pendant le temps d'attaque. Un signal à pleine échelle (0 dBFS) dès son premier échantillon peut ainsi écrêter brièvement (Pop, Vocal) ; à −3 dBFS, aucun profil n'écrête. En dehors des profils, un fort gain d'égalisation sur un signal déjà proche de la saturation est écrêté (distorsion).
 - La saturation n'est pas suréchantillonnée : à fort drive sur des aigus très forts, un peu de repliement de spectre (aliasing) est possible.
 - Le dosage de la saturation de Rock dépend de la fréquence : le gain automatique compense le drive là où l'égalisation est inférieure à son pic, donc le grain s'entend surtout dans les basses.
-- Pas de limiteur : un fort gain sur un signal déjà proche de la saturation sera écrêté (distorsion).
