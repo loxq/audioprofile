@@ -172,21 +172,48 @@ io.Copy(out, bassboost.Compressor(in, 44100, 2, bassboost.CompressorSettings{
 
 Tous ont un genou de 6 dB. La compensation du compresseur et la saturation relèvent le niveau pour contrebalancer la baisse du gain automatique : à −18 dBFS et 1 kHz, chaque profil avec effets rend le niveau d'entrée à moins de 0,4 dB près. La saturation, tangente hyperbolique normalisée, arrondit les pics et ajoute des harmoniques impaires ; son effet est surtout audible dans les basses, car le gain automatique compense le drive là où l'égalisation est sous son pic. Les réglages sont dans `profileCompression` et `profileSaturation` ([profiles.go](profiles.go)).
 
-### Tester avec ffmpeg
+## Ligne de commande : `audioprofile`
+
+Petit outil ([cmd/audioprofile](cmd/audioprofile/main.go)) pour tester les profils sur un vrai fichier. Il lit du PCM s16le sur l'entrée standard et écrit le résultat sur la sortie standard, donc il se place directement dans un pipe avec ffmpeg.
 
 ```sh
-# Convertir un MP3 en PCM brut
-ffmpeg -i musique.mp3 -f s16le -ar 44100 -ac 2 musique.raw
-
-# Après traitement, réécouter le résultat
-ffplay -f s16le -ar 44100 -ac 2 musique_boost.raw
+go build -o audioprofile ./cmd/audioprofile    # ou : go run ./cmd/audioprofile ...
 ```
+
+```sh
+# Écouter un morceau avec le profil rock
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -profile rock \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+
+# Produire un fichier WAV, avec un profil à moitié dosé
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -profile pop -intensity 0.5 \
+  | ffmpeg -f s16le -ar 44100 -ac 2 -i - musique_pop.wav
+
+# Comparer sans pipe, avec des fichiers bruts
+./audioprofile -profile jazz < musique.raw > musique_jazz.raw
+```
+
+| Option        | Défaut  | Description                                                       |
+|---------------|---------|-------------------------------------------------------------------|
+| `-profile`    | —       | Profil à appliquer (obligatoire, insensible à la casse)           |
+| `-intensity`  | `1`     | De `0` (aucun effet) à `1` (profil complet)                       |
+| `-rate`       | `44100` | Fréquence d'échantillonnage en Hz                                 |
+| `-channels`   | `2`     | Nombre de canaux                                                  |
+| `-list`       | —       | Affiche les profils disponibles et quitte                         |
+
+**`-rate` et `-channels` doivent correspondre aux options `-ar` et `-ac` de ffmpeg** : le flux brut n'a pas d'en-tête, l'outil ne peut pas les deviner. Une valeur incorrecte ne provoque pas d'erreur mais donne un son faux (basses et aigus mal placés, canaux mélangés).
+
+L'outil refuse de lire sur un terminal sans pipe ni redirection, et d'écrire du PCM brut sur un terminal. Les erreurs (profil inconnu, option invalide) sortent avec le code 2.
 
 ## Tests
 
 ```sh
 go test -v ./...
 ```
+
+Le CLI a ses propres tests dans [cmd/audioprofile](cmd/audioprofile/main_test.go) (liste, traitement, identité de `flat`, mono/rate, erreurs, entrée vide).
 
 Les tests vérifient notamment :
 

@@ -1,0 +1,116 @@
+// Commande audioprofile : applique un profil d'égaliseur à un flux PCM
+// s16le lu sur l'entrée standard et écrit le résultat sur la sortie standard.
+//
+//	ffmpeg -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+//	  | audioprofile -profile rock \
+//	  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+package main
+
+import (
+	"bufio"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	bassboost "poc-audio-profiles"
+)
+
+func main() {
+	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
+		if !errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintln(os.Stderr, "audioprofile:", err)
+		}
+		os.Exit(2)
+	}
+}
+
+// run contient toute la logique, séparée de main pour pouvoir être testée.
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("audioprofile", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		profile   = fs.String("profile", "", "profil à appliquer (voir -list)")
+		intensity = fs.Float64("intensity", 1, "intensité du profil, de 0 (aucun effet) à 1 (complet)")
+		rate      = fs.Int("rate", 44100, "fréquence d'échantillonnage en Hz (doit correspondre à celle de ffmpeg)")
+		channels  = fs.Int("channels", 2, "nombre de canaux (doit correspondre à celui de ffmpeg)")
+		list      = fs.Bool("list", false, "affiche les profils disponibles et quitte")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `Usage : audioprofile -profile NOM [options] < entrée.raw > sortie.raw
+
+Lit du PCM 16 bits signé little-endian entrelacé (s16le) sur l'entrée standard
+et écrit le même format sur la sortie standard. Exemple :
+
+  ffmpeg -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+    | audioprofile -profile rock \
+    | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+
+Options :
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("argument inattendu %q (les données passent par l'entrée standard)", fs.Arg(0))
+	}
+
+	if *list {
+		for _, p := range bassboost.Profiles() {
+			fmt.Fprintln(stdout, p)
+		}
+		return nil
+	}
+
+	if *profile == "" {
+		fs.Usage()
+		return errors.New("-profile est obligatoire (profils : " + profileNames() + ")")
+	}
+	p, ok := bassboost.ParseProfile(*profile)
+	if !ok {
+		return fmt.Errorf("profil inconnu %q (profils : %s)", *profile, profileNames())
+	}
+	if *rate <= 0 {
+		return fmt.Errorf("-rate doit être > 0 (reçu %d)", *rate)
+	}
+	if *channels < 1 {
+		return fmt.Errorf("-channels doit être >= 1 (reçu %d)", *channels)
+	}
+	if *intensity < 0 || *intensity > 1 {
+		return fmt.Errorf("-intensity doit être dans [0, 1] (reçu %g)", *intensity)
+	}
+	if isTerminal(stdin) {
+		return errors.New("aucune donnée sur l'entrée standard : utilisez un pipe (ffmpeg ... - | audioprofile ...) ou une redirection (< fichier.raw)")
+	}
+	if isTerminal(stdout) {
+		return errors.New("refus d'écrire du PCM brut sur un terminal : redirigez la sortie (> fichier.raw) ou utilisez un pipe (| ffplay ...)")
+	}
+
+	out := bufio.NewWriterSize(stdout, 64*1024)
+	if _, err := io.Copy(out, bassboost.ApplyProfile(stdin, *rate, *channels, p, *intensity)); err != nil {
+		return fmt.Errorf("traitement : %w", err)
+	}
+	return out.Flush()
+}
+
+func profileNames() string {
+	var names []string
+	for _, p := range bassboost.Profiles() {
+		names = append(names, p.String())
+	}
+	return strings.Join(names, ", ")
+}
+
+// isTerminal indique si r est un terminal (et non un pipe ou un fichier).
+func isTerminal(v any) bool {
+	f, ok := v.(*os.File)
+	if !ok {
+		return false
+	}
+	st, err := f.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
