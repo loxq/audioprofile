@@ -47,7 +47,7 @@ func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader 
 
 // newEqualizerReader est Equalizer avec, en option, un compresseur puis une
 // saturation appliqués dans cet ordre après les filtres.
-func newEqualizerReader(src io.Reader, sampleRate, channels int, bands []Band, comp *CompressorSettings, sat *saturator) io.Reader {
+func newEqualizerReader(src io.Reader, sampleRate, channels int, bands []Band, comp *CompressorSettings, sat *saturation) io.Reader {
 	if channels < 1 {
 		channels = 1
 	}
@@ -60,9 +60,13 @@ func newEqualizerReader(src io.Reader, sampleRate, channels int, bands []Band, c
 	if sampleRate > 0 {
 		cmp = newCompressor(float64(sampleRate), comp)
 	}
+	var sats []*saturator
+	if sat != nil && sampleRate > 0 {
+		sats = newSaturators(float64(sampleRate), channels, *sat)
+	}
 	r := &reader{
-		src: src, channels: channels, sat: sat, comp: cmp,
-		passthru: len(coefs) == 0 && sat == nil && cmp == nil,
+		src: src, channels: channels, sat: sats, comp: cmp,
+		passthru: len(coefs) == 0 && sats == nil && cmp == nil,
 		frame:    make([]float64, channels),
 	}
 	if !r.passthru {
@@ -122,10 +126,10 @@ func singleBand(src io.Reader, sampleRate, channels int, intensity float64, b Ba
 type reader struct {
 	src      io.Reader
 	channels int
-	filters  [][]biquad  // filters[canal][bande]
-	comp     *compressor // compresseur, après les filtres (peut être nil)
-	sat      *saturator  // saturation + gain de sortie, après le compresseur (peut être nil)
-	frame    []float64   // tampon de travail : une trame (un échantillon par canal)
+	filters  [][]biquad   // filters[canal][bande]
+	comp     *compressor  // compresseur, après les filtres (peut être nil)
+	sat      []*saturator // saturation + gain de sortie, un par canal, après le compresseur (peut être nil)
+	frame    []float64    // tampon de travail : une trame (un échantillon par canal)
 	passthru bool
 
 	pending []byte // octets lus mais ne formant pas encore une trame complète
@@ -182,7 +186,7 @@ func (r *reader) process(b []byte) []byte {
 		for ch := 0; ch < r.channels; ch++ {
 			y := r.frame[ch]
 			if r.sat != nil {
-				y = r.sat.apply(y)
+				y = r.sat[ch].apply(y)
 			}
 			// écrêtage pour éviter le débordement d'entier
 			y = math.Max(-32768, math.Min(32767, math.Round(y)))
@@ -265,5 +269,21 @@ func peaking(fs, f0, gainDB, q float64) coeffs {
 		b2: (1 - alpha*A) / a0,
 		a1: -2 * cosw / a0,
 		a2: (1 - alpha/A) / a0,
+	}
+}
+
+// lowPass : filtre passe-bas du second ordre (RBJ Audio EQ Cookbook).
+func lowPass(fs, f0, q float64) coeffs {
+	w0 := 2 * math.Pi * f0 / fs
+	cosw, sinw := math.Cos(w0), math.Sin(w0)
+	alpha := sinw / (2 * q)
+
+	a0 := 1 + alpha
+	return coeffs{
+		b0: (1 - cosw) / 2 / a0,
+		b1: (1 - cosw) / a0,
+		b2: (1 - cosw) / 2 / a0,
+		a1: -2 * cosw / a0,
+		a2: (1 - alpha) / a0,
 	}
 }

@@ -1,6 +1,6 @@
 # audioprofile
 
-Bibliothèque Go (et petit outil en ligne de commande) pour donner une couleur à un flux audio PCM : égaliseur, profils de genre (Rock, Pop, Jazz…), compresseur et saturation douce. Tout se fait **au fil de l'eau** sur des `io.Reader`, sans charger le fichier en mémoire.
+Bibliothèque Go (et petit outil en ligne de commande) pour donner une couleur à un flux audio PCM : égaliseur, profils de genre (Rock, Pop, Jazz…), compresseur et saturation de type tube. Tout se fait **au fil de l'eau** sur des `io.Reader`, sans charger le fichier en mémoire.
 
 Ce que le paquet `audioprofile` propose :
 
@@ -90,18 +90,28 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 
 #### Effets dynamiques par profil
 
-| Profil       | Compresseur (seuil, ratio, attaque / relâchement, compensation) | Saturation (drive / gain de sortie) | Pourquoi |
+| Profil       | Compresseur (seuil, ratio, attaque / relâchement, compensation) | Saturation (drive / asymétrie / gain de sortie) | Pourquoi |
 |--------------|------------------------------------------------------------------|-------------------------------------|----------|
-| `Rock`       | −20 dBFS, 3:1, 10 / 120 ms, 0 dB                                 | +6 dB / −1 dB                       | densité et grain |
+| `Rock`       | −20 dBFS, 3:1, 10 / 120 ms, 0 dB                                 | +6 dB / — / −1 dB                   | densité et grain |
 | `Pop`        | −20 dBFS, 2,5:1, 15 / 150 ms, +2,5 dB                            | —                                   | genre très compressé, mais propre |
-| `HipHop`     | −20 dBFS, 3:1, 20 / 100 ms, +1,5 dB                              | +3 dB / 0 dB                        | attaque lente pour garder le punch, chaleur des basses |
-| `Electronic` | −20 dBFS, 4:1, 5 / 80 ms, +1,5 dB                                | +3 dB / 0 dB                        | son dense et serré |
+| `HipHop`     | −20 dBFS, 3:1, 20 / 100 ms, +1,5 dB                              | +3 dB / — / 0 dB                    | attaque lente pour garder le punch, chaleur des basses |
+| `Electronic` | −20 dBFS, 4:1, 5 / 80 ms, +1,5 dB                                | +3 dB / — / 0 dB                    | son dense et serré |
 | `Vocal`      | −22 dBFS, 3:1, 5 / 150 ms, +3 dB                                 | —                                   | régularité et intelligibilité de la voix |
-| `Jazz`       | —                                                                | +2 dB / 0 dB                        | chaleur légère sans écraser la dynamique |
+| `Jazz`       | —                                                                | +3 dB / 0,2 / +2 dB                 | chaleur de tube (harmoniques paires) sans écraser la dynamique |
 
 `Flat`, `Classical` et `Acoustic` gardent la dynamique d'origine. Tous les compresseurs ont un genou de 6 dB.
 
-La compensation du compresseur et la saturation relèvent le niveau pour contrebalancer la baisse du gain automatique : à −18 dBFS et 1 kHz, chaque profil avec effets rend le niveau d'entrée à moins de 0,4 dB près. La saturation (tangente hyperbolique normalisée) arrondit les pics et ajoute des harmoniques impaires. Son effet est surtout audible dans les basses, car le gain automatique compense le drive là où l'égalisation est sous son pic. Les réglages sont dans `profileCompression` et `profileSaturation` ([profiles.go](profiles.go)).
+La compensation du compresseur et la saturation relèvent le niveau pour contrebalancer la baisse du gain automatique : à −18 dBFS et 1 kHz, chaque profil avec effets rend le niveau d'entrée à moins de 0,4 dB près. Les réglages sont dans `profileCompression` et `profileSaturation` ([profiles.go](profiles.go)).
+
+#### Saturation de type tube
+
+La saturation ([saturation.go](saturation.go)) applique, sur le signal normalisé, `f(x) = tanh(g·(x+b)) − tanh(g·b)` puis normalise pour que la pleine échelle reste à la pleine échelle (`g` = drive, `b` = asymétrie). Elle arrondit les pics au lieu de les écrêter.
+
+- **Asymétrie** : à `b = 0` (Rock, HipHop, Electronic), la courbe est symétrique et ne produit que des **harmoniques impaires** (3e, 5e…), plutôt dures. Avec `b > 0` (Jazz), elle est asymétrique comme celle d'un tube et ajoute des **harmoniques paires** (2e, 4e…), perçues comme plus chaudes : sur Jazz, 2e harmonique de 1,8 % à −18 dBFS et 8 % à −3 dBFS (200 Hz), contre 0 pour les autres profils. Un filtre passe-haut (7 Hz) retire la composante continue qu'introduit l'asymétrie, et le silence reste un silence exact.
+- **Suréchantillonnage ×4** : la non-linéarité s'exécute à 4 fois la fréquence d'échantillonnage, entre deux filtres passe-bas d'ordre 8 (coupure 0,43 × fs). Les harmoniques qui dépasseraient Nyquist sont atténuées avant de se replier dans le spectre audible : sur un sinus de 15 kHz poussé de 6 dB, le repliement à 900 Hz tombe de 6,4 % à 0,35 % (−25 dB). Ces filtres arrondissent légèrement les aigus extrêmes des profils saturés (mesuré à 44,1 kHz : −0,2 dB à 15 kHz, −3 dB à 18 kHz, −10 dB à 20 kHz).
+- **Plafond doux** : une onde saturée, une fois limitée en bande, peut dépasser la pleine échelle (la fondamentale d'une onde carrée vaut 1,27 fois son sommet). Un plafond doux arrondit ces pics au lieu de les laisser écrêter net : la saturation ne produit jamais la pleine échelle.
+- **Un état par canal** : les filtres et le filtre anti-continu sont propres à chaque canal ; un canal silencieux reste silencieux (pas de diaphonie).
+- **Le grain s'entend surtout dans les basses** : le gain automatique compense le drive là où l'égalisation est sous son pic.
 
 ### Égaliseur paramétrique
 
@@ -228,7 +238,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `bassboost_test.go`, `midboost_test.go`, `trebleboost_test.go` | gains et atténuations des préréglages, signal intact à intensité nulle ou au-delà de Nyquist |
 | `equalizer_test.go` | courbe multibande (gains à moins de 0,7 dB), effet de Q, bandes ignorées, limitation à ±24 dB, lecture fragmentée identique à une lecture en un bloc |
 | `dynamics_test.go` | courbe statique du compresseur, genou doux, attaque / relâchement progressifs, détection liée stéréo, coude franc sans NaN, compensation seule, mise à l'échelle par l'intensité |
-| `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire), harmoniques impaires uniquement, croissance avec l'intensité, niveau de Rock, pas d'écrêtage |
+| `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire, asymétrique avec biais), harmoniques impaires seulement à biais nul et paires avec biais, composante continue retirée, silence exact, réduction du repliement (≥ 20 dB), plafond doux, états par canal sans diaphonie, seul Jazz produit des harmoniques paires, croissance avec l'intensité, niveau de Rock |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
 | `cmd/audioprofile/main_test.go` | liste, traitement, identité de `flat`, mono et fréquence, erreurs, entrée vide |
 
@@ -239,5 +249,5 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 - Au-delà de l'intensité 1, le volume baisse et le niveau n'est plus calibré sur l'entrée ; un signal à pleine échelle (0 dBFS) peut écrêter plus largement qu'à l'intensité 1 (Pop, Vocal).
 - Les réglages des profils n'ont pas été validés à l'oreille : ils sont vérifiés par mesure (forme des courbes, niveaux) mais restent des points de départ à affiner.
 - Le compresseur n'a pas d'anticipation (look-ahead) et il n'y a pas de limiteur : un pic très bref passe pendant le temps d'attaque. Un signal à pleine échelle (0 dBFS) dès son premier échantillon peut ainsi écrêter brièvement (Pop, Vocal) ; à −3 dBFS, aucun profil n'écrête. En dehors des profils, un fort gain d'égalisation sur un signal déjà proche de la saturation est écrêté (distorsion).
-- La saturation n'est pas suréchantillonnée : à fort drive sur des aigus très forts, un peu de repliement de spectre (aliasing) est possible.
-- Le dosage de la saturation de Rock dépend de la fréquence : le gain automatique compense le drive là où l'égalisation est inférieure à son pic, donc le grain s'entend surtout dans les basses.
+- Le suréchantillonnage de la saturation réduit fortement le repliement de spectre mais ne l'élimine pas (−25 dB mesuré sur un cas poussé), et ses filtres arrondissent un peu les aigus extrêmes des profils saturés.
+- Le dosage de la saturation dépend de la fréquence : le gain automatique compense le drive là où l'égalisation est inférieure à son pic, donc le grain s'entend surtout dans les basses.

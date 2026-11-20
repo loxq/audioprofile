@@ -94,11 +94,11 @@ var profileCompression = [numProfiles]*CompressorSettings{
 // le gain de sortie appliqués après le compresseur, à intensité 1.
 // driveDB : gain poussé dans la saturation (plus c'est haut, plus le grain est marqué) ;
 // outputDB : gain de sortie final, pour régler le niveau après saturation.
-var profileSaturation = [numProfiles]struct{ driveDB, outputDB float64 }{
+var profileSaturation = [numProfiles]saturation{
 	Rock:       {driveDB: 6, outputDB: -1},
 	HipHop:     {driveDB: 3, outputDB: 0},
 	Electronic: {driveDB: 3, outputDB: 0},
-	Jazz:       {driveDB: 2, outputDB: 0},
+	Jazz:       {driveDB: 3, bias: 0.2, outputDB: 2},
 }
 
 // Profiles renvoie tous les profils disponibles.
@@ -174,8 +174,12 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 		sc := scaleCompression(*c, intensity)
 		comp = &sc
 	}
+	out := sat.outputDB * intensity
+	if sat.outputDB > 0 { // un gain positif ne croît pas au-delà de l'intensité 1 : il dépasserait la marge
+		out = sat.outputDB * math.Min(intensity, 1)
+	}
 	return newEqualizerReader(src, sampleRate, channels, bands, comp,
-		newSaturator(sat.driveDB*intensity, sat.outputDB*intensity))
+		&saturation{driveDB: sat.driveDB * intensity, bias: sat.bias * intensity, outputDB: out})
 }
 
 // peakResponseDB renvoie le gain maximal (en dB) de la chaîne de filtres,

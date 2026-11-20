@@ -82,7 +82,7 @@ func withoutDynamics(t *testing.T) {
 	t.Helper()
 	comp, sat := profileCompression, profileSaturation
 	profileCompression = [numProfiles]*CompressorSettings{}
-	profileSaturation = [numProfiles]struct{ driveDB, outputDB float64 }{}
+	profileSaturation = [numProfiles]saturation{}
 	t.Cleanup(func() { profileCompression, profileSaturation = comp, sat })
 }
 
@@ -135,7 +135,7 @@ func TestProfileStereoOddChunks(t *testing.T) {
 
 // hasDynamicsEffects indique si le profil a un compresseur ou une saturation.
 func hasDynamicsEffects(p Profile) bool {
-	return profileCompression[p] != nil || profileSaturation[p] != struct{ driveDB, outputDB float64 }{}
+	return profileCompression[p] != nil || profileSaturation[p] != saturation{}
 }
 
 // Les profils avec effets rendent à peu près le niveau d'entrée à un niveau
