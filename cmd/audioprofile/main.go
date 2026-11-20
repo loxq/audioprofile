@@ -16,6 +16,8 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/loxq/audioprofile"
 )
@@ -40,6 +42,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		intensity  = fs.Float64("intensity", 1, fmt.Sprintf("intensité du profil ou de l'ampli : 0 = aucun effet, 1 = complet, jusqu'à %g pour l'exagérer", audioprofile.MaxIntensity))
 		ab         = fs.Bool("ab", false, "compare à l'oreille : alterne original et traité, à niveau égal (lit tout le flux avant de jouer, mémoire proportionnelle à la durée)")
 		abSeconds  = fs.Float64("ab-seconds", 5, "avec -ab : durée de chaque segment, en secondes")
+		abDelay    = fs.Float64("ab-delay", 0, "avec -ab : retarde l'affichage de A / B de ce nombre de secondes, pour tenir compte de la mémoire tampon du lecteur (ffplay lit environ 1 s d'avance)")
 		targetLUFS = fs.Float64("target-lufs", 0, "amène la sonie intégrée de la sortie à cette valeur (LUFS, de -70 à 0 ; -14 : streaming, -23 : diffusion EBU R128), avec un limiteur sur les crêtes (lit tout le flux avant d'écrire)")
 		ceiling    = fs.Float64("ceiling", -1, "avec -target-lufs : plafond des crêtes d'échantillon en dBFS, de -40 à 0")
 		loudness   = fs.Bool("loudness", false, "affiche sur la sortie d'erreur la sonie (EBU R128 : intégrée, plage, crête) de l'original et du traité")
@@ -65,8 +68,8 @@ Profils radio       : -profile radio-hits, radio-rock, radio-talk… (multibande
 Ampli à tubes       : -amp clean, crunch ou lead (-cabinet ajoute le baffle)
 
 Comparer à l'oreille : -ab alterne l'original (A) et le traité (B) toutes les 5 s, à sonie
-égale (le plus fort est atténué). Lit tout le flux avant de jouer : mémoire proportionnelle
-à la durée, quelques secondes d'attente.
+égale (le plus fort est atténué), et annonce sur la console la source en cours. Lit tout le
+flux avant de jouer : mémoire proportionnelle à la durée, quelques secondes d'attente.
 Mesurer : -loudness affiche la sonie (EBU R128) avant et après, sur la sortie d'erreur.
 Régler la sonie : -target-lufs -14 amène la sortie à -14 LUFS (plafond des crêtes : -ceiling).
 Lit tout le flux avant d'écrire, comme -ab.
@@ -113,6 +116,12 @@ Options :
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if set["ab-seconds"] && !*ab {
 		return errors.New("-ab-seconds ne s'utilise qu'avec -ab")
+	}
+	if set["ab-delay"] && !*ab {
+		return errors.New("-ab-delay ne s'utilise qu'avec -ab")
+	}
+	if *abDelay < 0 || math.IsNaN(*abDelay) || math.IsInf(*abDelay, 0) {
+		return fmt.Errorf("-ab-delay doit être >= 0 (reçu %g)", *abDelay)
 	}
 	if set["ceiling"] && !set["target-lufs"] {
 		return errors.New("-ceiling ne s'utilise qu'avec -target-lufs")
@@ -170,7 +179,7 @@ Options :
 		if *amp != "" {
 			label = "ampli " + *amp
 		}
-		if err := runAB(out, stderr, stdin, process, *rate, *channels, *abSeconds, label, *loudness); err != nil {
+		if err := runAB(out, stderr, stdin, process, *rate, *channels, *abSeconds, *abDelay, label, *loudness); err != nil {
 			return err
 		}
 		return out.Flush()
@@ -266,7 +275,8 @@ func printLoudness(w io.Writer, orig, proc audioprofile.Loudness) {
 
 // runAB lit tout le flux, le traite, égalise les niveaux de l'original et du traité, puis écrit
 // un flux qui alterne l'un et l'autre (l'original en premier).
-func runAB(out io.Writer, stderr io.Writer, stdin io.Reader, process func(io.Reader) io.Reader, rate, channels int, seconds float64, label string, loudness bool) error {
+func runAB(out *bufio.Writer, stderr io.Writer, stdin io.Reader, process func(io.Reader) io.Reader, rate, channels int, seconds, delay float64, label string, loudness bool) error {
+	fmt.Fprintln(stderr, "A/B : traitement du morceau en cours, la lecture commencera dans quelques secondes…")
 	orig, err := io.ReadAll(stdin)
 	if err != nil {
 		return fmt.Errorf("lecture : %w", err)
@@ -292,8 +302,73 @@ func runAB(out io.Writer, stderr io.Writer, stdin io.Reader, process func(io.Rea
 	default:
 		fmt.Fprintf(stderr, "A/B : le traité est plus fort que l'original : gain de %.1f dB appliqué à B pour égaliser la sonie (l'original n'est pas modifié).\n", gProc)
 	}
-	_, err = out.Write(audioprofile.Alternate(audioprofile.ApplyGain(orig, gOrig), audioprofile.ApplyGain(proc, gProc), rate, channels, seconds))
-	return err
+	mixed := audioprofile.Alternate(audioprofile.ApplyGain(orig, gOrig), audioprofile.ApplyGain(proc, gProc), rate, channels, seconds)
+	return playAB(out, stderr, mixed, rate, channels, seconds, delay, label)
+}
+
+// playAB écrit le flux alterné segment par segment et annonce sur la sortie d'erreur la source
+// en cours (A ou B). Chaque annonce part juste avant l'écriture du segment, et chaque segment est
+// vidé avant le suivant : si la sortie est un pipe vers un lecteur, l'écriture se bloque quand le
+// pipe est plein, ce qui cale l'affichage sur la lecture, à la mémoire tampon du lecteur près
+// (ffplay lit environ 1 s d'avance : -ab-delay retarde l'affichage d'autant).
+func playAB(out *bufio.Writer, stderr io.Writer, mixed []byte, rate, channels int, seconds, delay float64, label string) error {
+	step := channels * 2
+	segBytes := audioprofile.SegmentFrames(rate, seconds) * step
+	color := isTerminal(stderr) && os.Getenv("NO_COLOR") == ""
+	announce := func(k int, at float64) {
+		name, text, code := "A", "original", "1;36"
+		if k%2 == 1 {
+			name, text, code = "B", "traité ("+label+")", "1;33"
+		}
+		line := fmt.Sprintf("[%d:%04.1f] %s  %s", int(at)/60, at-60*float64(int(at)/60), name, text)
+		if color {
+			line = "\x1b[" + code + "m" + line + "\x1b[0m"
+		}
+		fmt.Fprintln(stderr, line)
+	}
+	// Les annonces retardées passent par une seule goroutine, dans l'ordre : deux annonces proches
+	// ne peuvent pas se doubler.
+	type due struct {
+		when time.Time
+		k    int
+		at   float64
+	}
+	var queue chan due
+	var done sync.WaitGroup
+	if delay > 0 {
+		queue = make(chan due, len(mixed)/segBytes+2)
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			for d := range queue {
+				time.Sleep(time.Until(d.when))
+				announce(d.k, d.at)
+			}
+		}()
+		defer func() {
+			close(queue)
+			done.Wait()
+		}()
+	}
+	for k, start := 0, 0; start < len(mixed); k, start = k+1, start+segBytes {
+		end := start + segBytes
+		if end > len(mixed) {
+			end = len(mixed)
+		}
+		at := float64(start/step) / float64(rate)
+		if delay > 0 {
+			queue <- due{when: time.Now().Add(time.Duration(delay * float64(time.Second))), k: k, at: at}
+		} else {
+			announce(k, at)
+		}
+		if _, err := out.Write(mixed[start:end]); err != nil {
+			return err
+		}
+		if err := out.Flush(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func profileNames() string {

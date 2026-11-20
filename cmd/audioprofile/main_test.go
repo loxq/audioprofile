@@ -7,7 +7,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/loxq/audioprofile"
 )
@@ -566,5 +568,126 @@ func TestNoTargetLeavesOutputUnchanged(t *testing.T) {
 	}
 	if a == string(in) {
 		t.Error("rock doit modifier le signal")
+	}
+}
+
+// syncLog relève, à chaque ligne d'annonce écrite sur la sortie d'erreur, combien d'octets ont
+// déjà été écrits sur la sortie standard : de quoi vérifier que l'annonce précède son segment.
+type syncLog struct {
+	mu      sync.Mutex
+	written int
+	labels  []string
+	at      []int // octets déjà écrits au moment de chaque annonce
+	other   []string
+}
+
+type logStdout struct{ l *syncLog }
+type logStderr struct{ l *syncLog }
+
+func (w logStdout) Write(p []byte) (int, error) {
+	w.l.mu.Lock()
+	defer w.l.mu.Unlock()
+	w.l.written += len(p)
+	return len(p), nil
+}
+
+func (w logStderr) Write(p []byte) (int, error) {
+	w.l.mu.Lock()
+	defer w.l.mu.Unlock()
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		if strings.HasPrefix(line, "[") {
+			w.l.labels = append(w.l.labels, line)
+			w.l.at = append(w.l.at, w.l.written)
+		} else {
+			w.l.other = append(w.l.other, line)
+		}
+	}
+	return len(p), nil
+}
+
+// La source en cours est annoncée sur la console au moment où son segment part : A, B, A, B…
+// avec l'instant, et chaque annonce vient juste avant les octets de son segment.
+func TestABAnnouncesCurrentSource(t *testing.T) {
+	in := pcm(300, 44100, 2) // 1 s, 176 400 octets
+	var l syncLog
+	if err := run([]string{"-ab", "-profile", "rock", "-ab-seconds", "0.2"}, bytes.NewReader(in), logStdout{&l}, logStderr{&l}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"[0:00.0] A  original", "[0:00.2] B  traité (rock)", "[0:00.4] A  original", "[0:00.6] B  traité (rock)", "[0:00.8] A  original"}
+	if strings.Join(l.labels, "|") != strings.Join(want, "|") {
+		t.Fatalf("annonces %q, attendu %q", l.labels, want)
+	}
+	const segBytes = 8820 * 4
+	for k, at := range l.at {
+		if at != k*segBytes {
+			t.Errorf("annonce %d : %d octets déjà écrits, attendu %d (juste avant son segment)", k, at, k*segBytes)
+		}
+	}
+	if l.written != len(in) {
+		t.Errorf("%d octets écrits, attendu %d", l.written, len(in))
+	}
+	joined := strings.Join(l.other, "\n")
+	if !strings.Contains(joined, "traitement du morceau en cours") || !strings.Contains(joined, "A = original") {
+		t.Errorf("message d'attente et convention attendus dans %q", joined)
+	}
+}
+
+// Les annonces n'altèrent pas le flux audio : même sortie que le flux alterné complet, et sans
+// couleur quand la sortie d'erreur n'est pas un terminal.
+func TestABAnnouncementsDoNotChangeAudio(t *testing.T) {
+	in := pcm(300, 44100, 2)
+	var so, se bytes.Buffer
+	if err := run([]string{"-ab", "-profile", "flat", "-ab-seconds", "0.3"}, bytes.NewReader(in), &so, &se); err != nil {
+		t.Fatal(err)
+	}
+	if so.String() != string(in) {
+		t.Error("flat : la sortie doit rester identique à l'entrée")
+	}
+	if strings.Contains(se.String(), "\x1b[") {
+		t.Errorf("pas de couleur hors terminal : %q", se.String())
+	}
+	// les derniers segments, partiels, sont annoncés aussi : 1 s en segments de 0,3 s = 4 annonces
+	if n := strings.Count(se.String(), "\n[0:0"); n != 4 {
+		t.Errorf("%d annonces, attendu 4 dans %q", n, se.String())
+	}
+}
+
+// Avec -ab-delay, l'annonce part plus tard mais toutes arrivent avant la fin de la commande, dans l'ordre.
+func TestABDelayedAnnouncements(t *testing.T) {
+	in := pcm(300, 44100, 2)
+	var l syncLog
+	start := time.Now()
+	if err := run([]string{"-ab", "-profile", "rock", "-ab-seconds", "0.5", "-ab-delay", "0.15"}, bytes.NewReader(in), logStdout{&l}, logStderr{&l}); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) < 150*time.Millisecond {
+		t.Error("la commande doit attendre les annonces retardées")
+	}
+	if len(l.labels) != 2 || !strings.Contains(l.labels[0], "A  original") || !strings.Contains(l.labels[1], "B  traité") {
+		t.Errorf("annonces %q", l.labels)
+	}
+	if l.at[0] == 0 && l.written == 0 {
+		t.Error("rien n'a été écrit")
+	}
+	if l.at[0] < len(in)/2 { // 0,15 s plus tard : le premier segment est déjà écrit
+		t.Errorf("annonce A retardée : %d octets déjà écrits, attendu au moins le premier segment", l.at[0])
+	}
+}
+
+func TestABDelayFlagErrors(t *testing.T) {
+	in := pcm(200, 1000, 2)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-profile", "rock", "-ab-delay", "1"}, "-ab-delay ne s'utilise qu'avec -ab"},
+		{[]string{"-profile", "rock", "-ab", "-ab-delay", "-1"}, "-ab-delay doit être >= 0"},
+		{[]string{"-profile", "rock", "-ab", "-ab-delay", "NaN"}, "-ab-delay doit être >= 0"},
+		{[]string{"-profile", "rock", "-ab", "-ab-delay", "+Inf"}, "-ab-delay doit être >= 0"},
+	} {
+		_, _, err := runCLI(t, in, tc.args...)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
 	}
 }

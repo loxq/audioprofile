@@ -104,6 +104,20 @@ func ApplyGain(pcm []byte, gainDB float64) []byte {
 	return out
 }
 
+// SegmentFrames renvoie la longueur, en trames, des segments d'Alternate pour segmentSeconds
+// (au moins 1), ou 0 si sampleRate ou segmentSeconds est invalide. Elle permet à l'appelant de
+// savoir où tombent les changements de source, par exemple pour les annoncer.
+func SegmentFrames(sampleRate int, segmentSeconds float64) int {
+	if sampleRate <= 0 || !(segmentSeconds > 0) || math.IsInf(segmentSeconds, 0) {
+		return 0
+	}
+	seg := int(math.Round(segmentSeconds * float64(sampleRate)))
+	if seg < 1 {
+		seg = 1
+	}
+	return seg
+}
+
 // Alternate renvoie un flux PCM (s16le, entrelacé) qui alterne entre a et b toutes les
 // segmentSeconds secondes, en commençant par a : a pendant le premier segment, b pendant le
 // deuxième, etc. C'est un vrai A/B : les deux flux sont lus à la même position, la musique
@@ -124,10 +138,7 @@ func Alternate(a, b []byte, sampleRate, channels int, segmentSeconds float64) []
 		n = len(b)
 	}
 	frames := n / step
-	seg := int(math.Round(segmentSeconds * float64(sampleRate)))
-	if seg < 1 {
-		seg = 1
-	}
+	seg := SegmentFrames(sampleRate, segmentSeconds)
 	fade := int(math.Round(abCrossfadeMs / 1000 * float64(sampleRate)))
 	if fade > seg {
 		fade = seg // un fondu ne déborde pas sur le segment suivant

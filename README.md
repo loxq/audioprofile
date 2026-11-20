@@ -14,7 +14,7 @@ Ce que le paquet `audioprofile` propose :
 - `BassBoost`, `MidBoost`, `TrebleBoost` : **préréglages à une bande** (basses, médiums, aigus) réglés par une simple intensité ;
 - `MeasureLoudness`, `LoudnessMeter` : **mesure de sonie** EBU R128 (intégrée en LUFS, plage en LU, crête), au fil de l'eau ;
 - `NormalizeLoudness` : **normalisation de sonie** (amène un morceau à −14 LUFS, par exemple, avec un limiteur sur les crêtes) ;
-- `MatchGains`, `ApplyGain`, `Alternate` : **comparaison A/B à sonie égale** (alterne l'original et le traité) ;
+- `MatchGains`, `ApplyGain`, `Alternate`, `SegmentFrames` : **comparaison A/B à sonie égale** (alterne l'original et le traité) ;
 - `audioprofile` (commande) : applique un profil ou un préréglage d'ampli sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`, , compare à l'oreille avec `-ab` , mesure la sonie avec `-loudness` et la règle avec `-target-lufs`.
 
 Toutes ces fonctions prennent un `io.Reader` et en renvoient un autre : elles s'enchaînent, par exemple `TrebleBoost(MidBoost(BassBoost(src, …), …), …)`.
@@ -408,12 +408,14 @@ Amène la **sonie intégrée** d'un morceau à une cible, par exemple **−14 LU
 func MatchGains(original, processed []byte, sampleRate, channels int) (originalDB, processedDB float64)
 func ApplyGain(pcm []byte, gainDB float64) []byte
 func Alternate(a, b []byte, sampleRate, channels int, segmentSeconds float64) []byte
+func SegmentFrames(sampleRate int, segmentSeconds float64) int
 ```
 
 Comparer un son traité à l'original quand il est plus fort est trompeur : le plus fort paraît presque toujours « meilleur ». Ces trois fonctions travaillent sur des tampons en mémoire (pas sur des flux) :
 
 - **`MatchGains`** mesure la **sonie** des deux signaux ([LUFS intégrés](#mesure-de-sonie), qui suivent mieux ce qu'on entend que le niveau efficace : à niveau efficace égal, un signal grave paraît moins fort qu'un signal à 3 kHz) et renvoie les gains à appliquer pour les égaliser. Sur un extrait de moins de 400 ms, qui n'a pas de sonie intégrée, il retombe sur le niveau efficace. **Le plus fort est atténué, l'autre n'est jamais relevé** : aucun risque d'écrêtage. Un signal silencieux ne reçoit aucun gain.
 - **`ApplyGain`** renvoie une copie multipliée par un gain en dB, arrondie et écrêtée à 16 bits (0 dB = copie identique).
+- **`SegmentFrames`** donne la longueur d'un segment en trames : c'est ce qui permet à la commande d'annoncer les changements de source.
 - **`Alternate`** alterne `a` et `b` toutes les `segmentSeconds` secondes, en commençant par `a`. C'est un vrai A/B : les deux flux sont lus à la même position, la musique ne s'interrompt pas, seule la source change. Chaque changement est un **fondu enchaîné linéaire de 15 ms** (à gain constant : `a` et `b` étant la même musique, un fondu à puissance constante ajouterait 3 dB). Deux flux identiques ressortent identiques, bit à bit. La sortie a la longueur du plus court des deux.
 
 La commande les assemble avec l'option `-ab` ([voir plus bas](#comparer-à-loreille--ab)).
@@ -498,6 +500,7 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 | `-loudness`   | `false` | Affiche sur la sortie d'erreur la sonie (intégrée, plage, crête) de l'original et du traité |
 | `-ab`         | `false` | Alterne l'original (A) et le traité (B), à sonie égale |
 | `-ab-seconds` | `5`     | Avec `-ab` : durée de chaque segment, en secondes |
+| `-ab-delay`   | `0`     | Avec `-ab` : retarde l'affichage de A / B de ce nombre de secondes (tampon du lecteur) |
 | `-rate`       | `44100` | Fréquence d'échantillonnage en Hz                                 |
 | `-channels`   | `2`     | Nombre de canaux                                                  |
 | `-list`       | —       | Affiche les profils disponibles et quitte                         |
@@ -508,14 +511,28 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 ```sh
 ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
   | ./audioprofile -profile radio-hits -ab \
-  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+  | ffplay -nostats -loglevel error -f s16le -ar 44100 -ac 2 -nodisp -
 ```
+
+(`-nostats` évite que la ligne d'état de ffplay ne se mélange aux annonces ci-dessous.)
 
 La sortie alterne l'**original (A)** pendant 5 s, puis le **traité (B)** pendant 5 s, et ainsi de suite, sur la même musique (on change de source, pas de position). `-ab-seconds` règle la durée des segments (`-ab-seconds 2` pour comparer plus vite). Avant de jouer, la commande affiche sur la sortie d'erreur la convention (A = original, B = traité), la durée des segments et **le gain appliqué** : le côté le plus fort est atténué pour que les deux aient la même sonie (LUFS, voir [`MatchGains`](#comparaison-ab-à-sonie-égale)).
 
+- **La source en cours est annoncée sur la console**, avec l'instant, à chaque changement (en couleur si la sortie d'erreur est un terminal, sauf si `NO_COLOR` est défini) :
+
+  ```
+  A/B : traitement du morceau en cours, la lecture commencera dans quelques secondes…
+  A/B : A = original, B = traité (radio-hits) ; segments de 5 s : A de 0 à 5 s, B de 5 à 10 s, etc.
+  A/B : le traité est plus fort que l'original : gain de -2.7 dB appliqué à B pour égaliser la sonie (l'original n'est pas modifié).
+  [0:00.0] A  original
+  [0:05.0] B  traité (radio-hits)
+  [0:10.0] A  original
+  ```
+
+  Chaque annonce part juste avant l'écriture de son segment, et les segments sont écrits un par un : quand la sortie est un pipe, l'écriture se bloque dès que le pipe est plein, ce qui cale l'annonce sur la lecture. **Elle reste en avance d'environ la mémoire tampon du lecteur** : avec un lecteur parfaitement cadencé et un pipe de 64 Ko, j'ai mesuré 0,3 s d'avance (le pipe seul) ; ffplay, qui lit environ 1 s d'avance, devrait en ajouter autant (non mesuré avec un vrai lecteur audio). `-ab-delay 1` retarde l'affichage de 1 s pour compenser ; ajustez-le à l'oreille. Redirigez la sortie d'erreur (`2> /dev/null`) pour ne pas les afficher.
 - **Le flux entier est lu et traité avant la première note** : il y a quelques secondes d'attente, et la mémoire utilisée est proportionnelle à la durée du morceau (mesuré : 232 Mo pour un morceau de 3 min 51 s, soit environ 60 Mo par minute de stéréo à 44,1 kHz).
 - Fonctionne avec `-profile` comme avec `-amp`. Avec un profil sans effet (`flat`, ou intensité 0), la sortie est identique à l'entrée, bit à bit.
-- `-ab-seconds` sans `-ab` est une erreur.
+- `-ab-seconds` et `-ab-delay` sans `-ab` sont une erreur.
 
 ### Mesurer la sonie (`-loudness`)
 
@@ -596,7 +613,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `ab_test.go` | niveau efficace (sinus, silence numérique ignoré, paramètres invalides), gains qui égalisent les sonies sans jamais relever (traité plus fort, original plus fort, égaux, silence), sonie et non niveau efficace (basse contre 3 kHz), repli sur le niveau efficace sous 400 ms, `ApplyGain` (identité à 0 dB, −6 dB, écrêtage, copie, octet isolé), segments purs hors fondu, fondu linéaire monotone dans les deux sens, deux flux identiques bit à bit, entrelacement stéréo, longueur et paramètres invalides |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
-| `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, `-target-lufs` (−14 / −23 / −30 mesurés sur la sortie, après un profil, avec `-loudness`, cible inatteignable, silence, toutes les erreurs d'options), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
+| `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, annonce de la source en cours à l'instant et juste avant son segment, annonces retardées dans l'ordre, pas de couleur hors terminal, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, `-target-lufs` (−14 / −23 / −30 mesurés sur la sortie, après un profil, avec `-loudness`, cible inatteignable, silence, toutes les erreurs d'options), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues
 
