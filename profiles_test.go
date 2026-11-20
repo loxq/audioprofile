@@ -80,10 +80,11 @@ func TestProfilesPeakAtZeroDB(t *testing.T) {
 // pour n'examiner que la courbe d'égalisation.
 func withoutDynamics(t *testing.T) {
 	t.Helper()
-	comp, sat := profileCompression, profileSaturation
+	comp, sat, radio := profileCompression, profileSaturation, profileRadio
 	profileCompression = [numProfiles]*CompressorSettings{}
 	profileSaturation = [numProfiles]saturation{}
-	t.Cleanup(func() { profileCompression, profileSaturation = comp, sat })
+	profileRadio = [numProfiles]radioStage{}
+	t.Cleanup(func() { profileCompression, profileSaturation, profileRadio = comp, sat, radio })
 }
 
 func TestProfileShape(t *testing.T) {
@@ -133,17 +134,21 @@ func TestProfileStereoOddChunks(t *testing.T) {
 	}
 }
 
-// hasDynamicsEffects indique si le profil a un compresseur ou une saturation.
+// hasDynamicsEffects indique si le profil a un compresseur, une saturation ou
+// des étages radio (multibande, élargissement, limiteur).
 func hasDynamicsEffects(p Profile) bool {
-	return profileCompression[p] != nil || profileSaturation[p] != saturation{}
+	return profileCompression[p] != nil || profileSaturation[p] != saturation{} || profileRadio[p].active()
 }
+
+// isRadio indique si p est un profil radio (voir profiles_radio.go).
+func isRadio(p Profile) bool { return profileRadio[p].active() }
 
 // Les profils avec effets rendent à peu près le niveau d'entrée à un niveau
 // d'écoute normal (-18 dBFS, 1 kHz) : compensation du gain automatique.
 func TestProfilesLevelNearUnity(t *testing.T) {
 	const fs = 44100
 	for _, p := range Profiles() {
-		if !hasDynamicsEffects(p) {
+		if !hasDynamicsEffects(p) || isRadio(p) { // les profils radio sont plus forts par construction : voir profiles_radio_test.go
 			continue
 		}
 		in := tone(1000, ampOf(-18), fs, fs)
@@ -210,8 +215,12 @@ func TestProfilesLevelDoesNotCollapseAboveOne(t *testing.T) {
 		for _, intensity := range []float64{1, 2, MaxIntensity} {
 			out, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), fs, 1, p, intensity))
 			got := 20 * math.Log10(rms(out)/rms(in))
-			if got < -15 || got > 10 {
-				t.Errorf("%v intensité %.0f : niveau %+.1f dB, attendu entre -15 et +10", p, intensity, got)
+			max := 10.0
+			if isRadio(p) {
+				max = 15 // plus forts par construction : le limiteur borne les crêtes, pas le niveau moyen
+			}
+			if got < -15 || got > max {
+				t.Errorf("%v intensité %.0f : niveau %+.1f dB, attendu entre -15 et %+.0f", p, intensity, got, max)
 			}
 		}
 	}

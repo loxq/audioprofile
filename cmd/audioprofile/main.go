@@ -52,6 +52,9 @@ et écrit le même format sur la sortie standard. Exemple :
     | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
 
 Profils d'égaliseur : -profile rock, pop, jazz, tube…
+Profils radio       : -profile radio-hits, radio-rock, radio-talk… (multibande, stéréo
+                      élargie, limiteur à -1 dBFS : niveau ramené vers une valeur
+                      commune, un morceau calme sort plus fort, un master très fort plus faible)
 Ampli à tubes       : -amp clean, crunch ou lead (-cabinet ajoute le baffle)
 
 Options :

@@ -21,12 +21,26 @@ const (
 	Acoustic                  // naturel, présence des cordes et de l'air
 	Vocal                     // voix parlée / chantée : intelligibilité, graves réduits
 	Tube                      // chaleur d'ampli à tubes sur un morceau complet
+
+	// Profils « radio » : chaîne complète de traitement de diffusion (égalisation,
+	// compression multibande, élargissement stéréo, limiteur à −1 dBFS). Ils sont
+	// niveau ramené vers une valeur commune (plus fort pour un morceau calme, plus faible
+	// pour un master très fort) : voir profiles_radio.go.
+	RadioHits    // hits actuels : fort, brillant, large
+	RadioRock    // rock : médiums agressifs, bas serrés, saturation légère
+	RadioUrban   // hip-hop, R&B : basses profondes, aigus nets
+	RadioClub    // dance : basses puissantes, limitation franche, très large
+	RadioTalk    // voix parlée : intelligibilité, niveau régulier, image centrée
+	RadioGold    // classiques : chaleur et présence, caractère d'époque préservé
+	RadioNatural // diffusion transparente : dynamique naturelle, contrôle léger
 	numProfiles
 )
 
 var profileNames = [numProfiles]string{
 	Flat: "flat", Rock: "rock", Pop: "pop", Classical: "classical", Jazz: "jazz",
 	HipHop: "hiphop", Electronic: "electronic", Acoustic: "acoustic", Vocal: "vocal", Tube: "tube",
+	RadioHits: "radio-hits", RadioRock: "radio-rock", RadioUrban: "radio-urban", RadioClub: "radio-club",
+	RadioTalk: "radio-talk", RadioGold: "radio-gold", RadioNatural: "radio-natural",
 }
 
 // profileBands donne la courbe de chaque profil à intensité 1. Ces valeurs
@@ -84,6 +98,38 @@ var profileBands = [numProfiles][]Band{
 		{Type: Peaking, FreqHz: 3000, GainDB: 1, Q: 1},
 		{Type: HighShelf, FreqHz: 9000, GainDB: -2},
 	},
+	RadioHits: {
+		{Type: LowShelf, FreqHz: 100, GainDB: 2},
+		{Type: Peaking, FreqHz: 3000, GainDB: 1.5, Q: 1},
+		{Type: HighShelf, FreqHz: 9000, GainDB: 2.5},
+	},
+	RadioRock: {
+		{Type: LowShelf, FreqHz: 80, GainDB: 2},
+		{Type: Peaking, FreqHz: 400, GainDB: -2, Q: 1},
+		{Type: Peaking, FreqHz: 2500, GainDB: 3, Q: 0.9},
+		{Type: HighShelf, FreqHz: 8000, GainDB: 2},
+	},
+	RadioUrban: {
+		{Type: LowShelf, FreqHz: 60, GainDB: 5},
+		{Type: Peaking, FreqHz: 300, GainDB: -2, Q: 1},
+		{Type: HighShelf, FreqHz: 10000, GainDB: 3},
+	},
+	RadioClub: {
+		{Type: LowShelf, FreqHz: 60, GainDB: 4},
+		{Type: Peaking, FreqHz: 500, GainDB: -2, Q: 1},
+		{Type: HighShelf, FreqHz: 9000, GainDB: 3},
+	},
+	RadioTalk: {
+		{Type: LowShelf, FreqHz: 120, GainDB: -4},
+		{Type: Peaking, FreqHz: 1500, GainDB: 2, Q: 0.8},
+		{Type: Peaking, FreqHz: 3500, GainDB: 3, Q: 1},
+	},
+	RadioGold: {
+		{Type: LowShelf, FreqHz: 120, GainDB: 2},
+		{Type: Peaking, FreqHz: 3000, GainDB: 1, Q: 1},
+		{Type: HighShelf, FreqHz: 9000, GainDB: -1},
+	},
+	RadioNatural: nil,
 }
 
 // profileCompression donne, pour les profils qui en ont, le compresseur
@@ -95,6 +141,16 @@ var profileCompression = [numProfiles]*CompressorSettings{
 	Electronic: {ThresholdDB: -20, Ratio: 4, AttackMs: 5, ReleaseMs: 80, KneeDB: 6, MakeupDB: 1.5},
 	Vocal:      {ThresholdDB: -22, Ratio: 3, AttackMs: 5, ReleaseMs: 150, KneeDB: 6, MakeupDB: 3},
 	Tube:       {ThresholdDB: -20, Ratio: 1.8, AttackMs: 15, ReleaseMs: 150, KneeDB: 6}, // léger affaissement (sag)
+
+	// profils radio : AGC, compresseur large bande très lent qui nivelle les écarts de volume
+	// d'un morceau à l'autre avant la compression par bandes
+	RadioHits:    {ThresholdDB: -22, Ratio: 1.5, AttackMs: 150, ReleaseMs: 1200, KneeDB: 6, MakeupDB: 7.5},
+	RadioRock:    {ThresholdDB: -22, Ratio: 1.5, AttackMs: 150, ReleaseMs: 1200, KneeDB: 6, MakeupDB: 5},
+	RadioUrban:   {ThresholdDB: -22, Ratio: 1.5, AttackMs: 150, ReleaseMs: 1200, KneeDB: 6, MakeupDB: 6},
+	RadioClub:    {ThresholdDB: -22, Ratio: 1.6, AttackMs: 100, ReleaseMs: 800, KneeDB: 6, MakeupDB: 7},
+	RadioTalk:    {ThresholdDB: -22, Ratio: 2, AttackMs: 100, ReleaseMs: 800, KneeDB: 6, MakeupDB: 7},
+	RadioGold:    {ThresholdDB: -22, Ratio: 1.4, AttackMs: 200, ReleaseMs: 1500, KneeDB: 6, MakeupDB: 4},
+	RadioNatural: {ThresholdDB: -22, Ratio: 1.3, AttackMs: 200, ReleaseMs: 1500, KneeDB: 6, MakeupDB: 3.5},
 }
 
 // profileSaturation donne, pour les profils qui en ont, la saturation douce et
@@ -107,6 +163,9 @@ var profileSaturation = [numProfiles]saturation{
 	Electronic: {driveDB: 3, outputDB: 0},
 	Jazz:       {driveDB: 3, bias: 0.3, outputDB: 2},
 	Tube:       {driveDB: 6, bias: 0.4, outputDB: 0},
+	RadioRock:  {driveDB: 4, outputDB: -0.5},
+	RadioClub:  {driveDB: 3},
+	RadioGold:  {driveDB: 3, bias: 0.3},
 }
 
 // Profiles renvoie tous les profils disponibles.
@@ -137,9 +196,10 @@ func ParseProfile(name string) (Profile, bool) {
 	return Flat, false
 }
 
-// Bands renvoie une copie des bandes du profil à intensité 1 (nil pour Flat
-// ou un profil inconnu). Utile pour les afficher ou partir d'un profil pour
-// construire le sien avec Equalizer.
+// Bands renvoie une copie des bandes d'égalisation du profil à intensité 1 (nil
+// pour Flat, RadioNatural ou un profil inconnu). Utile pour les afficher ou partir
+// d'un profil pour construire le sien avec Equalizer. Pour un profil radio, ce n'est
+// que son égalisation : multibande, élargissement et limiteur n'y sont pas.
 func (p Profile) Bands() []Band {
 	if p < 0 || p >= numProfiles {
 		return nil
@@ -150,7 +210,7 @@ func (p Profile) Bands() []Band {
 // MaxIntensity est l'intensité maximale acceptée par ApplyProfile.
 const MaxIntensity = 3.0
 
-// ApplyProfile applique un profil d'égaliseur à un flux PCM (s16le, entrelacé).
+// ApplyProfile applique un profil prédéfini à un flux PCM (s16le, entrelacé).
 //
 // intensity met la courbe à l'échelle : 0 = aucun effet, 1 = profil complet,
 // au-delà de 1 = profil exagéré (gains, ratio du compresseur et drive de la
@@ -164,16 +224,26 @@ const MaxIntensity = 3.0
 // Pour éviter l'écrêtage, un gain global négatif est ajouté automatiquement :
 // il ramène à 0 dB la fréquence la plus renforcée par le profil. Le volume
 // perçu baisse donc d'autant ; compensez-le au besoin en aval.
+//
+// Les profils radio (RadioHits, RadioRock…) ajoutent une compression multibande, un
+// élargissement stéréo et un limiteur à −1 dBFS. Ils n'ont pas de gain automatique
+// (le limiteur garantit leur plafond à toute intensité) et leur niveau converge vers une
+// valeur commune : plus fort pour un morceau calme, plus faible pour un master très
+// fort. Voir profiles_radio.go. Leur multibande est ignorée si une
+// séparation dépasse la fréquence de Nyquist (sampleRate < 12 kHz environ).
 func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity float64) io.Reader {
-	bands := p.Bands()
-	if sampleRate <= 0 || len(bands) == 0 || intensity <= 0 || math.IsNaN(intensity) {
+	if sampleRate <= 0 || !p.hasEffects() || intensity <= 0 || math.IsNaN(intensity) {
 		return Equalizer(src, sampleRate, channels, nil)
 	}
+	bands := p.Bands()
+	radio := profileRadio[p]
 	intensity = math.Min(MaxIntensity, intensity)
 	for i := range bands {
 		bands[i].GainDB *= intensity
 	}
-	if peak := peakResponseDB(float64(sampleRate), designBands(float64(sampleRate), bands)); peak > 0 {
+	// Le gain automatique ramène le pic de l'égalisation à 0 dB. Les profils avec limiteur
+	// n'en ont pas besoin : le limiteur garantit déjà leur plafond.
+	if peak := peakResponseDB(float64(sampleRate), designBands(float64(sampleRate), bands)); peak > 0 && radio.limit == nil {
 		bands = append(bands, Band{Type: Gain, GainDB: -peak})
 	}
 	sat := profileSaturation[p]
@@ -188,8 +258,32 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 	if sat.outputDB > 0 { // un gain positif ne croît pas au-delà de l'intensité 1 : il dépasserait la marge
 		out = sat.outputDB * math.Min(intensity, 1)
 	}
-	return newEqualizerReader(src, sampleRate, channels, bands, comp,
-		&saturation{driveDB: sat.driveDB * intensity, bias: sat.bias * math.Min(intensity, 1), outputDB: out, stages: sat.stages})
+	c := chain{
+		bands: bands,
+		comp:  comp,
+		sat:   &saturation{driveDB: sat.driveDB * intensity, bias: sat.bias * math.Min(intensity, 1), outputDB: out, stages: sat.stages},
+	}
+	if radio.multi != nil {
+		m := scaleMultiband(*radio.multi, intensity)
+		c.multi = &m
+	}
+	if radio.width != 0 {
+		c.stereo = &stereoSettings{width: 1 + (radio.width-1)*intensity}
+	}
+	if radio.limit != nil {
+		l := *radio.limit
+		c.limit = &l
+	}
+	return newChainReader(src, sampleRate, channels, c)
+}
+
+// hasEffects indique si le profil modifie le son (faux pour Flat et un profil inconnu).
+func (p Profile) hasEffects() bool {
+	if p < 0 || p >= numProfiles {
+		return false
+	}
+	return len(profileBands[p]) > 0 || profileCompression[p] != nil ||
+		profileSaturation[p] != saturation{} || profileRadio[p].active()
 }
 
 // peakResponseDB renvoie le gain maximal (en dB) de la chaîne de filtres,

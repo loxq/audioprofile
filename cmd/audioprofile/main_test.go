@@ -31,7 +31,8 @@ func TestList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"flat", "rock", "pop", "classical", "jazz", "hiphop", "electronic", "acoustic", "vocal"} {
+	for _, want := range []string{"flat", "rock", "pop", "classical", "jazz", "hiphop", "electronic", "acoustic", "vocal", "tube",
+		"radio-hits", "radio-rock", "radio-urban", "radio-club", "radio-talk", "radio-gold", "radio-natural"} {
 		if !strings.Contains(out, want+"\n") {
 			t.Errorf("-list : %q absent de %q", want, out)
 		}
@@ -49,6 +50,42 @@ func TestProcessesStream(t *testing.T) {
 	}
 	if out == string(in) {
 		t.Error("rock doit modifier le signal")
+	}
+}
+
+// Un profil radio traverse le CLI : même longueur (le retard du limiteur est rattrapé),
+// signal modifié, crêtes sous le plafond de -1 dBFS, et intensité 0 sans effet.
+func TestRadioProfileThroughCLI(t *testing.T) {
+	in := pcm(1000, 20000, 2) // 8000 d'amplitude : bien en dessous du plafond
+	out, _, err := runCLI(t, in, "-profile", "radio-hits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != len(in) {
+		t.Fatalf("longueur %d, attendu %d", len(out), len(in))
+	}
+	if out == string(in) {
+		t.Error("radio-hits doit modifier le signal")
+	}
+	hot := pcm(1000, 20000, 2)
+	for i := 0; i+1 < len(hot); i += 2 { // même signal, mais à pleine échelle
+		v := int16(uint16(hot[i]) | uint16(hot[i+1])<<8)
+		v = int16(int(v) * 4)
+		hot[i], hot[i+1] = byte(uint16(v)), byte(uint16(v)>>8)
+	}
+	hout, _, err := runCLI(t, hot, "-profile", "radio-club", "-intensity", "3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i+1 < len(hout); i += 2 {
+		v := int(int16(uint16(hout[i]) | uint16(hout[i+1])<<8))
+		if v > 29205 || v < -29205 { // plafond -1 dBFS = 29204,5 : 29205 après arrondi
+			t.Fatalf("échantillon %d à la trame %d : au-dessus du plafond de -1 dBFS", v, i/4)
+		}
+	}
+	same, _, err := runCLI(t, in, "-profile", "radio-hits", "-intensity", "0")
+	if err != nil || same != string(in) {
+		t.Errorf("intensité 0 : le signal doit rester intact (err=%v)", err)
 	}
 }
 

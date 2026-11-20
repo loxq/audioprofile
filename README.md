@@ -1,12 +1,15 @@
 # audioprofile
 
-Bibliothèque Go (et petit outil en ligne de commande) pour donner une couleur à un flux audio PCM : égaliseur, profils de genre (Rock, Pop, Jazz…), compresseur et saturation de type tube. Tout se fait **au fil de l'eau** sur des `io.Reader`, sans charger le fichier en mémoire.
+Bibliothèque Go (et petit outil en ligne de commande) pour donner une couleur à un flux audio PCM : égaliseur, profils de genre (Rock, Pop, Jazz…), compresseur, saturation de type tube, traitement de diffusion « radio » (multibande, élargissement stéréo, limiteur). Tout se fait **au fil de l'eau** sur des `io.Reader`, sans charger le fichier en mémoire.
 
 Ce que le paquet `audioprofile` propose :
 
-- `ApplyProfile` : applique un **profil prédéfini** (Rock, Pop, Classical, Jazz, HipHop, Electronic, Acoustic, Vocal, Tube) avec une intensité réglable ;
+- `ApplyProfile` : applique un **profil prédéfini** (Rock, Pop, Classical, Jazz, HipHop, Electronic, Acoustic, Vocal, Tube, et les profils **radio** `radio-hits`, `radio-rock`, `radio-urban`, `radio-club`, `radio-talk`, `radio-gold`, `radio-natural`) avec une intensité réglable ;
 - `Equalizer` : **égaliseur paramétrique** à bandes libres (type, fréquence, gain en dB, Q) ;
 - `Compressor` : **compresseur de dynamique** (seuil, ratio, attaque, relâchement, genou, compensation) ;
+- `MultibandCompressor` : **compresseur multibande** (séparations de Linkwitz-Riley, un compresseur par bande) ;
+- `Limiter` : **limiteur de crête à anticipation** (plafond garanti, sortie recalée sur l'entrée) ;
+- `StereoWidth` : **élargisseur stéréo** mid/side qui garde les basses au centre et la compatibilité mono ;
 - `TubeAmp` : **ampli à tubes simulé** (étages de saturation asymétriques en cascade, correcteur de timbre, baffle optionnel), avec les préréglages `AmpClean`, `AmpCrunch` et `AmpLead` ;
 - `BassBoost`, `MidBoost`, `TrebleBoost` : **préréglages à une bande** (basses, médiums, aigus) réglés par une simple intensité ;
 - `audioprofile` (commande) : applique un profil ou un préréglage d'ampli sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`.
@@ -27,6 +30,11 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 # Ou la chaleur d'un ampli à tubes (intensité 2 : plus audible sur un morceau calme)
 ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
   | ./audioprofile -amp crunch -intensity 2 \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+
+# Ou un traitement de diffusion « radio » : plus fort, plus large, crêtes limitées à −1 dBFS
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -profile radio-hits \
   | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
 ```
 
@@ -87,13 +95,20 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 | `Acoustic`   | `acoustic`           | Naturel, présence des cordes et de l'air           |
 | `Vocal`      | `vocal`              | Voix : intelligibilité, graves réduits             |
 | `Tube`       | `tube`               | Chaleur d'ampli à tubes sur un morceau complet     |
+| `RadioHits`  | `radio-hits`         | Hits actuels : fort, brillant, large               |
+| `RadioRock`  | `radio-rock`         | Médiums agressifs, bas serrés, saturation légère   |
+| `RadioUrban` | `radio-urban`        | Hip-hop, R&B : basses profondes, aigus nets        |
+| `RadioClub`  | `radio-club`         | Dance : basses puissantes, limitation franche, très large |
+| `RadioTalk`  | `radio-talk`         | Voix parlée : intelligibilité, niveau régulier, image centrée |
+| `RadioGold`  | `radio-gold`         | Classiques : chaleur et présence, caractère d'époque préservé |
+| `RadioNatural` | `radio-natural`    | Diffusion transparente : dynamique naturelle, contrôle léger |
 
 - **Intensité** : `0` = aucun effet, `1` = profil complet. Elle met à l'échelle les gains, le ratio du compresseur et le drive de la saturation.
-- **Exagérer un profil** : une intensité **au-delà de 1** (jusqu'à `MaxIntensity` = 3) amplifie l'effet, utile pour juger d'un profil à l'oreille ou pour un rendu plus marqué. Le gain automatique grandit avec l'effet, donc le volume baisse (de 1 à 7 dB à l'intensité 3 selon le profil, mesuré à −18 dBFS et 1 kHz) ; `Tube` fait exception : sa saturation relève les signaux faibles (+8 dB à 3). La compensation du compresseur, le gain de sortie positif et l'asymétrie de la saturation ne croissent pas au-delà de leur valeur d'intensité 1 : les deux premiers pour éviter l'écrêtage, le dernier parce qu'à fort drive l'asymétrie rendrait le niveau quasi nul. Les valeurs hors de [0, `MaxIntensity`] sont ramenées dedans.
-- **Gain automatique** : pour éviter l'écrêtage, un gain global négatif est ajouté afin que la fréquence la plus renforcée reste à 0 dB. Le volume perçu baisse donc d'autant, sauf pour les profils avec effets (voir plus bas).
-- **Chaîne de traitement** : égalisation → compresseur → saturation → gain de sortie. Les deux derniers étages ne concernent que certains profils.
+- **Exagérer un profil** : une intensité **au-delà de 1** (jusqu'à `MaxIntensity` = 3) amplifie l'effet, utile pour juger d'un profil à l'oreille ou pour un rendu plus marqué. Le gain automatique grandit avec l'effet, donc le volume baisse (de 1 à 7 dB à l'intensité 3 selon le profil, mesuré à −18 dBFS et 1 kHz) ; `Tube` fait exception : sa saturation relève les signaux faibles (+8 dB à 3). Les profils `radio-*` n'ont pas de gain automatique : leur niveau dépend de l'AGC et de la multibande, et leurs crêtes restent sous −1 dBFS à toute intensité (voir [Profils radio](#profils-radio)). La compensation du compresseur, le gain de sortie positif et l'asymétrie de la saturation ne croissent pas au-delà de leur valeur d'intensité 1 : les deux premiers pour éviter l'écrêtage, le dernier parce qu'à fort drive l'asymétrie rendrait le niveau quasi nul. Les valeurs hors de [0, `MaxIntensity`] sont ramenées dedans.
+- **Gain automatique** : pour éviter l'écrêtage, un gain global négatif est ajouté afin que la fréquence la plus renforcée reste à 0 dB. Le volume perçu baisse donc d'autant, sauf pour les profils avec effets (voir plus bas) et pour les profils `radio-*`, qui n'ont pas de gain automatique : c'est leur limiteur qui borne les crêtes.
+- **Chaîne de traitement** : égalisation → compresseur → [multibande] → saturation → gain de sortie → [élargissement stéréo] → [limiteur]. Seuls certains profils ont les étages suivant l'égalisation ; l'élargissement et le limiteur (entre crochets) ne concernent que les profils radio.
 - **Valeurs** : les courbes sont des points de départ raisonnables, pas une norme (il n'existe pas de standard officiel). Elles sont définies dans [profiles.go](profiles.go).
-- **Utilitaires** : `Profiles()` liste les profils, `ParseProfile("rock")` en retrouve un par son nom (insensible à la casse), `p.String()` donne son nom, et `p.Bands()` renvoie une copie de ses bandes d'égalisation pour partir d'elles avec `Equalizer`.
+- **Utilitaires** : `Profiles()` liste les profils, `ParseProfile("rock")` en retrouve un par son nom (insensible à la casse), `p.String()` donne son nom, et `p.Bands()` renvoie une copie de ses bandes d'égalisation pour partir d'elles avec `Equalizer` (pour un profil `radio-*`, ce n'est que l'égalisation : la multibande, l'élargissement et le limiteur n'y sont pas ; `radio-natural` n'a aucune bande).
 
 #### Effets dynamiques par profil
 
@@ -109,13 +124,51 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 
 `Flat`, `Classical` et `Acoustic` gardent la dynamique d'origine. Tous les compresseurs ont un genou de 6 dB.
 
-La compensation du compresseur et la saturation relèvent le niveau pour contrebalancer la baisse du gain automatique : à −18 dBFS et 1 kHz, chaque profil avec effets rend le niveau d'entrée à moins de 0,4 dB près. Les réglages sont dans `profileCompression` et `profileSaturation` ([profiles.go](profiles.go)).
+La compensation du compresseur et la saturation relèvent le niveau pour contrebalancer la baisse du gain automatique : à −18 dBFS et 1 kHz, chaque profil avec effets de ce tableau rend le niveau d'entrée à moins de 0,4 dB près. Les profils `radio-*` ne suivent pas cette règle (voir [Profils radio](#profils-radio)). Les réglages sont dans `profileCompression` et `profileSaturation` ([profiles.go](profiles.go)).
+
+#### Profils radio
+
+Les profils `radio-*` appliquent une chaîne de diffusion complète, dont la structure s'inspire de celle des processeurs de diffusion (nettoyage, niveau, mise en forme par bandes, limitation) :
+
+```
+égalisation → AGC → multibande (4 bandes) → saturation (certains) → élargissement stéréo → limiteur −1 dBFS
+```
+
+- **AGC** : un compresseur large bande très lent (attaque 100–200 ms, relâchement 0,8–1,5 s) qui nivelle les écarts de volume d'un morceau à l'autre, avec une compensation de 3,5 à 7,5 dB.
+- **Multibande** : quatre bandes séparées à 120 Hz, 1,2 kHz et 6 kHz (sub-basses, médiums, présence, air), seuil de −20 à −26 dBFS, ratios de 1,5:1 (`radio-natural`) à 3,5:1 (`radio-club`).
+- **Élargissement** : `radio-hits` ×1,25, `radio-rock` ×1,2, `radio-urban` ×1,15, `radio-club` ×1,4, `radio-gold` ×1,15 ; `radio-talk` et `radio-natural` gardent l'image d'origine.
+- **Limiteur** : plafond à −1 dBFS (1 dB de marge pour les crêtes inter-échantillons), anticipation 5 ms, relâchement de 50 ms (`radio-club`) à 150 ms (`radio-natural`). C'est le dernier étage et **il remplace le gain automatique** des autres profils : la garantie vient du limiteur, pas d'un gain négatif.
+- Saturation : `radio-rock` (+4 dB), `radio-club` (+3 dB) et `radio-gold` (+3 dB, asymétrie 0,3).
+
+Tous les réglages sont dans [profiles.go](profiles.go) et [profiles_radio.go](profiles_radio.go).
+
+**Leur niveau converge vers une valeur commune et leur dynamique réelle est plus faible : un morceau calme ou moyen sort plus fort, un master déjà très fort sort plus faible, et les crêtes ne dépassent jamais −1 dBFS.** Sur les trois morceaux de `testdata/` (valeurs mesurées sur le flux de sortie, intensité 1) :
+
+| Profil | Niveau RMS (calme / moyen / très fort) | Crête | Plage dynamique¹ | Côté/milieu² |
+|--------|------------------------------------------|-------|------------------|--------------|
+| `radio-hits`    | +5,4 / +2,5 / −3,8 dB | ≤ −1,0 dBFS | −3,4 / −5,9 / −6,9 dB | +0,8 / +2,0 / +4,8 dB |
+| `radio-rock`    | +6,9 / +4,4 / −1,6 dB | ≤ −1,0 dBFS | −4,0 / −5,7 / −7,2 dB | +0,5 / +1,8 / +4,6 dB |
+| `radio-urban`   | +4,1 / +1,8 / −3,8 dB | ≤ −1,0 dBFS | −2,9 / −4,8 / −6,3 dB | +0,4 / +1,0 / +3,7 dB |
+| `radio-club`    | +8,2 / +5,0 / −1,2 dB | ≤ −1,0 dBFS | −5,0 / −6,3 / −7,8 dB | +1,1 / +2,8 / +5,6 dB |
+| `radio-talk`    | +2,6 / +0,2 / −5,7 dB | ≤ −1,0 dBFS | −4,8 / −6,0 / −7,1 dB | −0,2 / +1,0 / +4,2 dB |
+| `radio-gold`    | +4,0 / +2,0 / −2,6 dB | ≤ −1,0 dBFS | −2,2 / −4,3 / −5,5 dB | +0,5 / +0,9 / +2,8 dB |
+| `radio-natural` | +2,3 / +0,8 / −3,4 dB | ≤ −1,0 dBFS | −1,2 / −3,0 / −4,3 dB | −0,1 / −0,2 / +1,5 dB |
+
+¹ Écart entre le 95ᵉ et le 10ᵉ centile du niveau RMS par fenêtres de 400 ms. ² Rapport d'énergie côté/milieu, en dB. L'élargisseur seul apporte `20·log10(largeur)` (+1,9 dB pour ×1,25) ; le reste vient de la compression des basses, très centrées, qui augmente la part relative du côté.
+
+À lire dans ce tableau :
+
+- **Le niveau converge** vers une valeur commune : un morceau calme est relevé de 2 à 8 dB, un master très fort est **abaissé** de 1 à 6 dB (l'AGC et la multibande le compressent avant le limiteur). Ce n'est pas un volume maximal garanti.
+- **La dynamique réelle est réduite de 1 à 8 dB.** Si ces profils donnent l'impression d'un son plus « vivant », ce serait plutôt par le relâchement lent des bandes graves (le punch reste), la présence relevée des médiums et des aigus et l'élargissement stéréo : c'est une hypothèse, pas une mesure. Un renforçateur de transitoires ou une expansion, qui augmenteraient réellement la dynamique, ne sont pas implémentés.
+- **Intensité** : `0` laisse le signal intact (octet pour octet) ; en dessous de 1, ratios, élargissement et égalisation sont réduits proportionnellement ; au-delà de 1, ratios et élargissement croissent (largeur ×1,75 pour `radio-hits` à l'intensité 3) tandis que les compensations de niveau restent à leur valeur d'intensité 1. Le plafond de −1 dBFS tient à toute intensité.
+- Sur un sinus à −18 dBFS, ces profils relèvent le niveau de +3,6 dB (`radio-natural`) à +10,4 dB (`radio-club`) : un signal faible est remonté par la compensation sans que les bandes ne le compressent. C'est ce que fait un AGC avec des passages calmes ; `radio-natural` et `radio-gold` sont les moins marqués.
+- Avec `sampleRate` bas (séparations au-delà de Nyquist, par exemple 8 kHz), la multibande est ignorée ; le reste de la chaîne et le limiteur continuent d'agir.
 
 #### Saturation de type tube
 
 La saturation ([saturation.go](saturation.go)) applique, sur le signal normalisé, `f(x) = tanh(g·x + β) − tanh(β)` puis normalise pour que la pleine échelle reste à la pleine échelle (`g` = drive, `β` = asymétrie). Elle arrondit les pics au lieu de les écrêter.
 
-- **Asymétrie** : à `β = 0` (Rock, HipHop, Electronic), la courbe est symétrique et ne produit que des **harmoniques impaires** (3e, 5e…), plutôt dures. Avec `β > 0` (Jazz, Tube), elle est asymétrique comme celle d'un tube et ajoute des **harmoniques paires** (2e, 4e…), perçues comme plus chaudes. À 200 Hz, 2e harmonique de 1,9 % (Jazz) et 3,7 % (Tube) à −18 dBFS, 8,8 % et 9,6 % à −3 dBFS, contre 0 pour les autres profils. Un filtre passe-haut (7 Hz) retire la composante continue qu'introduit l'asymétrie, et le silence reste un silence exact.
+- **Asymétrie** : à `β = 0` (Rock, HipHop, Electronic), la courbe est symétrique et ne produit que des **harmoniques impaires** (3e, 5e…), plutôt dures. Avec `β > 0` (Jazz, Tube, RadioGold), elle est asymétrique comme celle d'un tube et ajoute des **harmoniques paires** (2e, 4e…), perçues comme plus chaudes. À 200 Hz, 2e harmonique de 1,9 % (Jazz) et 3,7 % (Tube) à −18 dBFS, 8,8 % et 9,6 % à −3 dBFS, contre 0 pour les profils sans asymétrie. Un filtre passe-haut (7 Hz) retire la composante continue qu'introduit l'asymétrie, et le silence reste un silence exact.
 - **`β` est exprimé dans l'argument de `tanh`, donc indépendant du drive** : le gain des petits signaux vaut `g·sech²(β)` (au facteur de normalisation près) et grandit avec le drive. Une asymétrie exprimée dans le domaine d'entrée, `tanh(g·(x+b))`, repousse au contraire le point de fonctionnement dans la zone saturée à mesure que `g` grandit : mise à l'échelle avec l'intensité, elle rendait `Jazz` quasi muet à −18 dB et `Tube` à −49 dB à l'intensité 3. Un test de régression garde ce comportement.
 - **Suréchantillonnage ×4** : la non-linéarité s'exécute à 4 fois la fréquence d'échantillonnage, entre deux filtres passe-bas d'ordre 8 (coupure 0,43 × fs). Les harmoniques qui dépasseraient Nyquist sont atténuées avant de se replier dans le spectre audible : sur un sinus de 15 kHz poussé de 6 dB, le repliement à 900 Hz tombe de 6,4 % à 0,35 % (−25 dB). Ces filtres arrondissent légèrement les aigus extrêmes des profils saturés (mesuré à 44,1 kHz : −0,2 dB à 15 kHz, −3 dB à 18 kHz, −10 dB à 20 kHz).
 - **Plusieurs étages** : l'étage peut être mis en cascade (voir [Ampli à tubes](#ampli-à-tubes)), avec inversion de phase et couplage entre étages.
@@ -352,6 +405,11 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
   | ./audioprofile -profile rock -intensity 2 \
   | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
 
+# Traitement de diffusion : profil radio, à moitié dosé
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -profile radio-hits -intensity 0.5 \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+
 # Ampli à tubes : préréglage crunch, plus marqué (intensité 2)
 ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
   | ./audioprofile -amp crunch -intensity 2 \
@@ -363,7 +421,7 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 
 | Option        | Défaut  | Description                                                       |
 |---------------|---------|-------------------------------------------------------------------|
-| `-profile`    | —       | Profil d'égaliseur à appliquer (`-profile` ou `-amp` est obligatoire) |
+| `-profile`    | —       | Profil à appliquer, y compris `radio-*` (`-profile` ou `-amp` est obligatoire) |
 | `-amp`        | —       | Préréglage d'ampli à tubes : `clean`, `crunch` ou `lead` (exclusif avec `-profile`) |
 | `-cabinet`    | `false` | Avec `-amp` : ajoute la simulation de baffle (son étouffé sur un morceau complet) |
 | `-intensity`  | `1`     | Profil ou ampli : `0` = aucun effet, `1` = réglage complet, jusqu'à `3` pour l'exagérer |
@@ -389,19 +447,22 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `bassboost_test.go`, `midboost_test.go`, `trebleboost_test.go` | gains et atténuations des préréglages, signal intact à intensité nulle ou au-delà de Nyquist |
 | `equalizer_test.go` | courbe multibande (gains à moins de 0,7 dB), effet de Q, bandes ignorées, limitation à ±24 dB, lecture fragmentée identique à une lecture en un bloc |
 | `dynamics_test.go` | courbe statique du compresseur, genou doux, attaque / relâchement progressifs, détection liée stéréo, coude franc sans NaN, compensation seule, mise à l'échelle par l'intensité |
-| `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire, asymétrique avec biais), harmoniques impaires seulement à biais nul et paires avec biais, composante continue retirée, silence exact, réduction du repliement (≥ 20 dB), plafond doux (jamais ±32767 après arrondi), états par canal sans diaphonie, seuls les profils asymétriques (Jazz, Tube) produisent des harmoniques paires, gain des petits signaux qui croît avec le drive malgré le biais (régression), croissance avec l'intensité, niveau de Rock |
+| `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire, asymétrique avec biais), harmoniques impaires seulement à biais nul et paires avec biais, composante continue retirée, silence exact, réduction du repliement (≥ 20 dB), plafond doux (jamais ±32767 après arrondi), états par canal sans diaphonie, seuls les profils asymétriques (Jazz, Tube, RadioGold) produisent des harmoniques paires, gain des petits signaux qui croît avec le drive malgré le biais (régression), croissance avec l'intensité, niveau de Rock |
 | `tubeamp_presets_test.go` | noms et `ParseTubeAmpPreset`, `Settings()` copie, `Scaled` (0, 1, 2, plafonds, gain de sortie positif), intensité nulle, niveau proche de l'entrée, distorsion croissante de Clean à Lead, aucun écrêtage jusqu'à l'intensité 3 avec ou sans baffle, silence et lecture fragmentée |
 | `tubeamp_test.go` | identité sans réglage, polarité conservée de 1 à 4 étages, harmoniques paires sans composante continue, correcteur de timbre (±6 dB), baffle (aigus, très graves, présence, résonance), pic des filtres finaux à 0 dB, basse fréquence d'échantillonnage, gain de sortie, silence exact, états par canal et lecture fragmentée, aucun écrêtage même à fond |
 | `limiter_test.go` | signal sous le plafond bit à bit identique (mono et stéréo), alignement d'une impulsion et longueur (entrées de 1 à 1000 trames, vide), aucune crête au-dessus du plafond (sinus à pleine échelle dès le début, salve soudaine, bruit blanc, de 0 à −20 dB), anticipation (réduction avant la salve, retour au niveau après relâchement), rampe progressive et non une marche (échelon continu — un test de mutation sans la rampe le fait échouer), détection liée, lecture octet par octet / données + EOF / octets en trop, silence exact, réglages invalides, pas de dérive sur 3 × 65 536 trames |
 | `multiband_test.go` | somme des bandes plate à ±0,1 dB (4 bandes, de 20 Hz à 18 kHz, séparations comprises — un test de mutation sans la compensation passe-tout le fait échouer), bandes indépendantes (aigus intacts quand seules les basses sont compressées, contre −20 dB en large bande), compensation par bande, réglages invalides = identité, détection liée et canal silencieux exactement silencieux, longueur conservée, lecture fragmentée identique, mise à l'échelle par l'intensité |
+| `profiles_radio_test.go` | les 7 profils radio existent, noms et `ParseProfile`, constantes existantes inchangées, niveau à −18 dBFS dans la fourchette mesurée de chacun, aucune crête au-dessus du plafond de −1 dBFS (7 profils × 4 intensités × 7 fréquences, mono et stéréo, signal à −0,1 dBFS), identité à intensité 0 / négative / NaN, longueur conservée, profil sans égalisation (`radio-natural`) qui agit quand même, élargissement du côté/milieu à la largeur du profil à 3 kHz et pas à 60 Hz, image de `radio-talk` inchangée, dynamique non écrasée (écart faible/fort conservé), basse fréquence d'échantillonnage |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
-| `cmd/audioprofile/main_test.go` | liste des profils et des amplis, traitement, identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
+| `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues
 
 - Pas de gestion des en-têtes WAV ni d'autres formats que s16le.
 - Les préréglages `BassBoost`, `MidBoost` et `TrebleBoost` ont leurs fréquences et leur gain maximal fixés dans le code (constantes `cutoffHz`, `midCenterHz`, `midQ`, `trebleCutoffHz` et `maxGainDB`) ; utiliser `Equalizer` pour les régler.
+- Les profils `radio-*` n'ont pas été validés à l'oreille non plus. Leurs réglages sont des points de départ, calés par mesure sur trois morceaux : niveau, crête, plage dynamique et côté/milieu.
+- Les filtres de séparation du compresseur multibande sont à phase minimale, pas à phase linéaire. Le limiteur borne les crêtes d'échantillons (pas les crêtes inter-échantillons) et n'apporte pas de saturation ou d'écrêtage doux en plus.
 - Au-delà de l'intensité 1, le volume baisse et le niveau n'est plus calibré sur l'entrée ; un signal à pleine échelle (0 dBFS) peut écrêter plus largement qu'à l'intensité 1 (Pop, Vocal).
 - Les réglages des profils n'ont pas été validés à l'oreille : ils sont vérifiés par mesure (forme des courbes, niveaux) mais restent des points de départ à affiner.
 - Le compresseur n'a pas d'anticipation : un pic très bref passe pendant le temps d'attaque. Seul le [`Limiter`](#limiteur) garantit un plafond. Un signal à pleine échelle (0 dBFS) dès son premier échantillon peut donc écrêter brièvement avec un profil sans limiteur (Pop, Vocal) ; à −3 dBFS, aucun profil n'écrête. En dehors des profils, un fort gain d'égalisation sur un signal déjà proche de la saturation est écrêté (distorsion).
