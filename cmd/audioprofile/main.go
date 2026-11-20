@@ -32,14 +32,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("audioprofile", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		profile   = fs.String("profile", "", "profil à appliquer (voir -list)")
+		profile   = fs.String("profile", "", "profil d'égaliseur à appliquer (voir -list)")
+		amp       = fs.String("amp", "", "préréglage d'ampli à tubes à appliquer à la place d'un profil (voir -list-amps)")
+		cabinet   = fs.Bool("cabinet", false, "avec -amp : ajoute la simulation de baffle (son étouffé sur un morceau complet)")
 		intensity = fs.Float64("intensity", 1, fmt.Sprintf("intensité du profil : 0 = aucun effet, 1 = complet, jusqu'à %g pour l'exagérer", audioprofile.MaxIntensity))
 		rate      = fs.Int("rate", 44100, "fréquence d'échantillonnage en Hz (doit correspondre à celle de ffmpeg)")
 		channels  = fs.Int("channels", 2, "nombre de canaux (doit correspondre à celui de ffmpeg)")
 		list      = fs.Bool("list", false, "affiche les profils disponibles et quitte")
+		listAmps  = fs.Bool("list-amps", false, "affiche les préréglages d'ampli disponibles et quitte")
 	)
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, `Usage : audioprofile -profile NOM [options] < entrée.raw > sortie.raw
+		fmt.Fprintf(stderr, `Usage : audioprofile (-profile NOM | -amp NOM) [options] < entrée.raw > sortie.raw
 
 Lit du PCM 16 bits signé little-endian entrelacé (s16le) sur l'entrée standard
 et écrit le même format sur la sortie standard. Exemple :
@@ -47,6 +50,9 @@ et écrit le même format sur la sortie standard. Exemple :
   ffmpeg -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
     | audioprofile -profile rock \
     | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+
+Profils d'égaliseur : -profile rock, pop, jazz, tube…
+Ampli à tubes       : -amp clean, crunch ou lead (-cabinet ajoute le baffle)
 
 Options :
 `)
@@ -66,12 +72,33 @@ Options :
 		return nil
 	}
 
-	if *profile == "" {
-		fs.Usage()
-		return errors.New("-profile est obligatoire (profils : " + profileNames() + ")")
+	if *listAmps {
+		for _, p := range audioprofile.TubeAmpPresets() {
+			fmt.Fprintln(stdout, p)
+		}
+		return nil
 	}
-	p, ok := audioprofile.ParseProfile(*profile)
-	if !ok {
+
+	if *profile == "" && *amp == "" {
+		fs.Usage()
+		return errors.New("-profile ou -amp est obligatoire (profils : " + profileNames() + " ; amplis : " + ampNames() + ")")
+	}
+	if *profile != "" && *amp != "" {
+		return errors.New("-profile et -amp sont exclusifs : choisissez l'un ou l'autre")
+	}
+	if *cabinet && *amp == "" {
+		return errors.New("-cabinet ne s'utilise qu'avec -amp")
+	}
+	var (
+		p      audioprofile.Profile
+		preset audioprofile.TubeAmpPreset
+		ok     bool
+	)
+	if *amp != "" {
+		if preset, ok = audioprofile.ParseTubeAmpPreset(*amp); !ok {
+			return fmt.Errorf("ampli inconnu %q (amplis : %s)", *amp, ampNames())
+		}
+	} else if p, ok = audioprofile.ParseProfile(*profile); !ok {
 		return fmt.Errorf("profil inconnu %q (profils : %s)", *profile, profileNames())
 	}
 	if *rate <= 0 {
@@ -91,7 +118,15 @@ Options :
 	}
 
 	out := bufio.NewWriterSize(stdout, 64*1024)
-	if _, err := io.Copy(out, audioprofile.ApplyProfile(stdin, *rate, *channels, p, *intensity)); err != nil {
+	var processed io.Reader
+	if *amp != "" {
+		s := preset.Settings().Scaled(*intensity)
+		s.Cabinet = *cabinet
+		processed = audioprofile.TubeAmp(stdin, *rate, *channels, s)
+	} else {
+		processed = audioprofile.ApplyProfile(stdin, *rate, *channels, p, *intensity)
+	}
+	if _, err := io.Copy(out, processed); err != nil {
 		return fmt.Errorf("traitement : %w", err)
 	}
 	return out.Flush()
@@ -100,6 +135,14 @@ Options :
 func profileNames() string {
 	var names []string
 	for _, p := range audioprofile.Profiles() {
+		names = append(names, p.String())
+	}
+	return strings.Join(names, ", ")
+}
+
+func ampNames() string {
+	var names []string
+	for _, p := range audioprofile.TubeAmpPresets() {
 		names = append(names, p.String())
 	}
 	return strings.Join(names, ", ")

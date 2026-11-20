@@ -4,12 +4,12 @@ Bibliothèque Go (et petit outil en ligne de commande) pour donner une couleur �
 
 Ce que le paquet `audioprofile` propose :
 
-- `ApplyProfile` : applique un **profil prédéfini** (Rock, Pop, Classical, Jazz, HipHop, Electronic, Acoustic, Vocal) avec une intensité réglable ;
+- `ApplyProfile` : applique un **profil prédéfini** (Rock, Pop, Classical, Jazz, HipHop, Electronic, Acoustic, Vocal, Tube) avec une intensité réglable ;
 - `Equalizer` : **égaliseur paramétrique** à bandes libres (type, fréquence, gain en dB, Q) ;
 - `Compressor` : **compresseur de dynamique** (seuil, ratio, attaque, relâchement, genou, compensation) ;
-- `TubeAmp` : **ampli à tubes simulé** (étages de saturation asymétriques en cascade, correcteur de timbre, baffle optionnel) ;
+- `TubeAmp` : **ampli à tubes simulé** (étages de saturation asymétriques en cascade, correcteur de timbre, baffle optionnel), avec les préréglages `AmpClean`, `AmpCrunch` et `AmpLead` ;
 - `BassBoost`, `MidBoost`, `TrebleBoost` : **préréglages à une bande** (basses, médiums, aigus) réglés par une simple intensité ;
-- `audioprofile` (commande) : applique un profil sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`.
+- `audioprofile` (commande) : applique un profil ou un préréglage d'ampli sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`.
 
 Toutes ces fonctions prennent un `io.Reader` et en renvoient un autre : elles s'enchaînent, par exemple `TrebleBoost(MidBoost(BassBoost(src, …), …), …)`.
 
@@ -23,9 +23,14 @@ go build -o audioprofile ./cmd/audioprofile
 ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
   | ./audioprofile -profile rock \
   | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+
+# Ou la chaleur d'un ampli à tubes sur le morceau
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -amp crunch \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
 ```
 
-Les profils disponibles s'affichent avec `./audioprofile -list`. Détails dans [Ligne de commande](#ligne-de-commande).
+Les profils disponibles s'affichent avec `./audioprofile -list`, les préréglages d'ampli avec `./audioprofile -list-amps`. Détails dans [Ligne de commande](#ligne-de-commande).
 
 ## Format d'entrée / sortie
 
@@ -81,6 +86,7 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 | `Electronic` | `electronic`         | Sub-basses et aigus marqués, médiums creusés       |
 | `Acoustic`   | `acoustic`           | Naturel, présence des cordes et de l'air           |
 | `Vocal`      | `vocal`              | Voix : intelligibilité, graves réduits             |
+| `Tube`       | `tube`               | Chaleur d'ampli à tubes sur un morceau complet     |
 
 - **Intensité** : `0` = aucun effet, `1` = profil complet. Elle met à l'échelle les gains, le ratio du compresseur et le drive de la saturation.
 - **Exagérer un profil** : une intensité **au-delà de 1** (jusqu'à `MaxIntensity` = 3) amplifie l'effet, utile pour juger d'un profil à l'oreille ou pour un rendu plus marqué. Le gain automatique grandit avec l'effet, donc le volume baisse (jusqu'à environ −7 dB à 3 selon le profil, mesuré à −18 dBFS et 1 kHz) ; la compensation du compresseur, elle, reste à sa valeur d'intensité 1 pour éviter l'écrêtage. Les valeurs hors de [0, `MaxIntensity`] sont ramenées dedans.
@@ -98,6 +104,7 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 | `HipHop`     | −20 dBFS, 3:1, 20 / 100 ms, +1,5 dB                              | +3 dB / — / 0 dB                    | attaque lente pour garder le punch, chaleur des basses |
 | `Electronic` | −20 dBFS, 4:1, 5 / 80 ms, +1,5 dB                                | +3 dB / — / 0 dB                    | son dense et serré |
 | `Vocal`      | −22 dBFS, 3:1, 5 / 150 ms, +3 dB                                 | —                                   | régularité et intelligibilité de la voix |
+| `Tube`       | −20 dBFS, 1,8:1, 15 / 150 ms, 0 dB                               | +6 dB / 0,2 / 0 dB                  | léger affaissement (« sag ») et harmoniques paires ; courbe douce : basses +2 dB, aigus −2 dB |
 | `Jazz`       | —                                                                | +3 dB / 0,2 / +2 dB                 | chaleur de tube (harmoniques paires) sans écraser la dynamique |
 
 `Flat`, `Classical` et `Acoustic` gardent la dynamique d'origine. Tous les compresseurs ont un genou de 6 dB.
@@ -206,6 +213,37 @@ La chaîne est : étages de saturation → correcteur de timbre → baffle (si d
 - Sans effet (flux renvoyé tel quel) si `sampleRate <= 0`, ou si tous les réglages sont nuls et `Cabinet` est faux. `Bias` seul, sans drive, n'a pas d'effet.
 - Mesuré sur `sample01.mp3` (réglages ci-dessus) : composante continue de 0,14 % de l'original réduite à 0,001 %, aucun échantillon à pleine échelle.
 
+#### Préréglages d'ampli
+
+```go
+func TubeAmpPresets() []TubeAmpPreset                 // AmpClean, AmpCrunch, AmpLead
+func ParseTubeAmpPreset(name string) (TubeAmpPreset, bool)
+func (p TubeAmpPreset) Settings() TubeAmpSettings      // une copie, modifiable
+func (s TubeAmpSettings) Scaled(intensity float64) TubeAmpSettings
+```
+
+```go
+s := audioprofile.AmpCrunch.Settings().Scaled(1.5) // 1,5 = plus marqué
+s.Cabinet = false                                  // le baffle est désactivé par défaut
+io.Copy(out, audioprofile.TubeAmp(in, 44100, 2, s))
+```
+
+Réglés pour un **morceau complet** : le baffle est désactivé, la saturation reste plus mesurée que sur une guitare seule, et le gain de sortie est calibré pour que le niveau à −18 dBFS et 1 kHz reste à moins de 0,3 dB de l'entrée.
+
+| Préréglage | Drive | Étages | Asymétrie | Timbre (basses / médiums / aigus) | Sortie | Distorsion à 200 Hz, −12 dBFS |
+|------------|-------|--------|-----------|-----------------------------------|--------|-------------------------------|
+| `AmpClean`  | 4 dB  | 2 | 0,10 | +1 / 0 / 0     | −3,5 dB | 2,2 % : chaleur discrète |
+| `AmpCrunch` | 9 dB  | 2 | 0,15 | +2 / −1 / +1   | −2,5 dB | 3,7 % : saturation franche |
+| `AmpLead`   | 14 dB | 3 | 0,20 | +1 / +2 / +1   | −5 dB   | 10 % : forte saturation |
+
+`Scaled(intensity)` met le drive, l'asymétrie et le timbre à l'échelle (0 = aucun effet, 1 = inchangé, jusqu'à `MaxIntensity` = 3). Un gain de sortie négatif suit l'intensité ; un gain de sortie positif ne croît pas au-delà de 1, pour ne pas dépasser la marge. Le nombre d'étages et `Cabinet` ne changent pas.
+
+Mesures sur trois morceaux de `testdata/` (via le CLI, intensité 1, sans baffle) :
+
+- **Aucun échantillon à pleine échelle** et une composante continue nulle (0,24 % pour Rock sur le premier morceau, 0 pour le profil `Tube` et les amplis).
+- **Sur un morceau calme** (RMS −21 dBFS), le niveau reste à moins de 1,3 dB de l'original. **Sur un master très fort** (RMS −9,7 dBFS, crête 0 dBFS), la saturation compresse les passages forts : le volume baisse de 2 à 6 dB.
+- **`AmpClean` et `AmpCrunch` modifient peu un morceau calme** (leur drive y sature à peine) : pour mieux les entendre, utilisez une intensité de 2 ou 3. `AmpLead` est nettement audible.
+
 ### Préréglages à une bande
 
 ```go
@@ -246,17 +284,25 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
   | ./audioprofile -profile rock -intensity 2 \
   | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
 
+# Ampli à tubes : préréglage crunch, plus marqué (intensité 2)
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -amp crunch -intensity 2 \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+
 # Comparer sans pipe, avec des fichiers bruts
 ./audioprofile -profile jazz < musique.raw > musique_jazz.raw
 ```
 
 | Option        | Défaut  | Description                                                       |
 |---------------|---------|-------------------------------------------------------------------|
-| `-profile`    | —       | Profil à appliquer (obligatoire, insensible à la casse)           |
+| `-profile`    | —       | Profil d'égaliseur à appliquer (`-profile` ou `-amp` est obligatoire) |
+| `-amp`        | —       | Préréglage d'ampli à tubes : `clean`, `crunch` ou `lead` (exclusif avec `-profile`) |
+| `-cabinet`    | `false` | Avec `-amp` : ajoute la simulation de baffle (son étouffé sur un morceau complet) |
 | `-intensity`  | `1`     | `0` = aucun effet, `1` = profil complet, jusqu'à `3` pour l'exagérer |
 | `-rate`       | `44100` | Fréquence d'échantillonnage en Hz                                 |
 | `-channels`   | `2`     | Nombre de canaux                                                  |
 | `-list`       | —       | Affiche les profils disponibles et quitte                         |
+| `-list-amps`  | —       | Affiche les préréglages d'ampli disponibles et quitte             |
 
 **`-rate` et `-channels` doivent correspondre aux options `-ar` et `-ac` de ffmpeg** : le flux brut n'a pas d'en-tête, l'outil ne peut pas les deviner. Une valeur incorrecte ne provoque pas d'erreur mais donne un son faux (basses et aigus mal placés, canaux mélangés).
 
@@ -276,9 +322,10 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `equalizer_test.go` | courbe multibande (gains à moins de 0,7 dB), effet de Q, bandes ignorées, limitation à ±24 dB, lecture fragmentée identique à une lecture en un bloc |
 | `dynamics_test.go` | courbe statique du compresseur, genou doux, attaque / relâchement progressifs, détection liée stéréo, coude franc sans NaN, compensation seule, mise à l'échelle par l'intensité |
 | `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire, asymétrique avec biais), harmoniques impaires seulement à biais nul et paires avec biais, composante continue retirée, silence exact, réduction du repliement (≥ 20 dB), plafond doux (jamais ±32767 après arrondi), états par canal sans diaphonie, seul Jazz produit des harmoniques paires, croissance avec l'intensité, niveau de Rock |
+| `tubeamp_presets_test.go` | noms et `ParseTubeAmpPreset`, `Settings()` copie, `Scaled` (0, 1, 2, plafonds, gain de sortie positif), intensité nulle, niveau proche de l'entrée, distorsion croissante de Clean à Lead, aucun écrêtage jusqu'à l'intensité 3 avec ou sans baffle, silence et lecture fragmentée |
 | `tubeamp_test.go` | identité sans réglage, polarité conservée de 1 à 4 étages, harmoniques paires sans composante continue, correcteur de timbre (±6 dB), baffle (aigus, très graves, présence, résonance), pic des filtres finaux à 0 dB, basse fréquence d'échantillonnage, gain de sortie, silence exact, états par canal et lecture fragmentée, aucun écrêtage même à fond |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
-| `cmd/audioprofile/main_test.go` | liste, traitement, identité de `flat`, mono et fréquence, erreurs, entrée vide |
+| `cmd/audioprofile/main_test.go` | liste des profils et des amplis, traitement, identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues
 
@@ -287,5 +334,6 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 - Au-delà de l'intensité 1, le volume baisse et le niveau n'est plus calibré sur l'entrée ; un signal à pleine échelle (0 dBFS) peut écrêter plus largement qu'à l'intensité 1 (Pop, Vocal).
 - Les réglages des profils n'ont pas été validés à l'oreille : ils sont vérifiés par mesure (forme des courbes, niveaux) mais restent des points de départ à affiner.
 - Le compresseur n'a pas d'anticipation (look-ahead) et il n'y a pas de limiteur : un pic très bref passe pendant le temps d'attaque. Un signal à pleine échelle (0 dBFS) dès son premier échantillon peut ainsi écrêter brièvement (Pop, Vocal) ; à −3 dBFS, aucun profil n'écrête. En dehors des profils, un fort gain d'égalisation sur un signal déjà proche de la saturation est écrêté (distorsion).
+- Les profils et préréglages avec saturation sont calibrés à −18 dBFS : sur un master très fort, la saturation compresse les passages forts et le volume baisse (jusqu'à −6 dB mesuré sur un morceau à RMS −9,7 dBFS).
 - Le suréchantillonnage de la saturation réduit fortement le repliement de spectre mais ne l'élimine pas (−25 dB mesuré sur un cas poussé), et ses filtres arrondissent un peu les aigus extrêmes des profils saturés.
 - Le dosage de la saturation dépend de la fréquence : le gain automatique compense le drive là où l'égalisation est inférieure à son pic, donc le grain s'entend surtout dans les basses.

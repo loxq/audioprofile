@@ -302,20 +302,26 @@ func TestSaturatedOutputNeverClips(t *testing.T) {
 	}
 }
 
-// Seul Jazz est asymétrique : il est le seul à produire des harmoniques paires.
-func TestOnlyJazzAddsEvenHarmonics(t *testing.T) {
+// Seuls les profils asymétriques (biais > 0) produisent des harmoniques paires.
+func TestOnlyBiasedProfilesAddEvenHarmonics(t *testing.T) {
 	const fs = 44100
 	in := tone(200, ampOf(-9), fs, fs)
+	biased := 0
 	for _, p := range Profiles() {
 		out, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), fs, 1, p, 1))
 		even := goertzel(out, 400, fs) / goertzel(out, 200, fs)
 		t.Logf("%-10v 2e harmonique : %.2f %%", p, 100*even)
-		if p == Jazz && even < 0.02 {
-			t.Errorf("Jazz doit produire des harmoniques paires (%.4f)", even)
-		}
-		if p != Jazz && even > 0.005 {
+		if profileSaturation[p].bias > 0 {
+			biased++
+			if even < 0.02 {
+				t.Errorf("%v est asymétrique : harmoniques paires attendues (%.4f)", p, even)
+			}
+		} else if even > 0.005 {
 			t.Errorf("%v ne doit pas produire d'harmonique paire (%.4f)", p, even)
 		}
+	}
+	if biased < 2 {
+		t.Errorf("Jazz et Tube doivent être asymétriques (%d trouvé(s))", biased)
 	}
 }
 

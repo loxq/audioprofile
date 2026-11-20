@@ -79,7 +79,7 @@ func TestErrors(t *testing.T) {
 		args []string
 		want string
 	}{
-		"profil manquant":   {[]string{}, "-profile est obligatoire"},
+		"profil manquant":   {[]string{}, "-profile ou -amp est obligatoire"},
 		"profil inconnu":    {[]string{"-profile", "disco"}, "profil inconnu"},
 		"rate invalide":     {[]string{"-profile", "rock", "-rate", "0"}, "-rate"},
 		"channels invalide": {[]string{"-profile", "rock", "-channels", "0"}, "-channels"},
@@ -119,5 +119,84 @@ func TestIntensityAboveOne(t *testing.T) {
 	}
 	if len(two) != len(in) {
 		t.Errorf("longueur %d, attendu %d", len(two), len(in))
+	}
+}
+
+func TestListAmps(t *testing.T) {
+	out, _, err := runCLI(t, nil, "-list-amps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"clean", "crunch", "lead"} {
+		if !strings.Contains(out, want+"\n") {
+			t.Errorf("-list-amps : %q absent de %q", want, out)
+		}
+	}
+}
+
+func TestTubeProfileListed(t *testing.T) {
+	out, _, _ := runCLI(t, nil, "-list")
+	if !strings.Contains(out, "tube\n") {
+		t.Errorf("-list doit contenir le profil tube : %q", out)
+	}
+	if _, _, err := runCLI(t, pcm(100, 100, 2), "-profile", "tube"); err != nil {
+		t.Errorf("-profile tube : %v", err)
+	}
+}
+
+func TestAmpPresets(t *testing.T) {
+	in := pcm(100, 5000, 2)
+	outs := map[string]string{}
+	for _, name := range []string{"clean", "crunch", "lead"} {
+		out, _, err := runCLI(t, in, "-amp", name)
+		if err != nil || len(out) != len(in) {
+			t.Fatalf("-amp %s : err=%v len=%d/%d", name, err, len(out), len(in))
+		}
+		if out == string(in) {
+			t.Errorf("-amp %s doit modifier le signal", name)
+		}
+		outs[name] = out
+	}
+	if outs["clean"] == outs["crunch"] || outs["crunch"] == outs["lead"] {
+		t.Error("les préréglages doivent donner des sons différents")
+	}
+	// casse ignorée, intensité nulle = signal intact
+	if out, _, err := runCLI(t, in, "-amp", "CRUNCH", "-intensity", "0"); err != nil || out != string(in) {
+		t.Errorf("-amp avec intensité 0 : signal intact attendu (err=%v)", err)
+	}
+	// intensité exagérée acceptée, différente de 1
+	one, _, _ := runCLI(t, in, "-amp", "crunch", "-intensity", "1")
+	two, _, err := runCLI(t, in, "-amp", "crunch", "-intensity", "2")
+	if err != nil || one == two {
+		t.Errorf("-intensity 2 doit donner un autre résultat (err=%v)", err)
+	}
+}
+
+func TestAmpCabinet(t *testing.T) {
+	in := pcm(3000, 5000, 2) // 3 kHz : le baffle agit
+	plain, _, _ := runCLI(t, in, "-amp", "clean")
+	cab, _, err := runCLI(t, in, "-amp", "clean", "-cabinet")
+	if err != nil || len(cab) != len(in) {
+		t.Fatalf("err=%v len=%d/%d", err, len(cab), len(in))
+	}
+	if plain == cab {
+		t.Error("-cabinet doit changer le son")
+	}
+}
+
+func TestAmpErrors(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args []string
+		want string
+	}{
+		"ampli inconnu":    {[]string{"-amp", "fuzz"}, "ampli inconnu"},
+		"profil et ampli":  {[]string{"-profile", "rock", "-amp", "lead"}, "exclusifs"},
+		"cabinet sans amp": {[]string{"-profile", "rock", "-cabinet"}, "-cabinet"},
+		"ampli intensité":  {[]string{"-amp", "lead", "-intensity", "9"}, "-intensity"},
+	} {
+		_, errOut, err := runCLI(t, pcm(100, 100, 2), tc.args...)
+		if err == nil || !strings.Contains(err.Error()+errOut, tc.want) {
+			t.Errorf("%s : %v / %q ne contient pas %q", name, err, errOut, tc.want)
+		}
 	}
 }

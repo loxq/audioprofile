@@ -20,12 +20,13 @@ const (
 	Electronic                // sub-basses et aigus marqués, médiums creusés
 	Acoustic                  // naturel, présence des cordes et de l'air
 	Vocal                     // voix parlée / chantée : intelligibilité, graves réduits
+	Tube                      // chaleur d'ampli à tubes sur un morceau complet
 	numProfiles
 )
 
 var profileNames = [numProfiles]string{
 	Flat: "flat", Rock: "rock", Pop: "pop", Classical: "classical", Jazz: "jazz",
-	HipHop: "hiphop", Electronic: "electronic", Acoustic: "acoustic", Vocal: "vocal",
+	HipHop: "hiphop", Electronic: "electronic", Acoustic: "acoustic", Vocal: "vocal", Tube: "tube",
 }
 
 // profileBands donne la courbe de chaque profil à intensité 1. Ces valeurs
@@ -78,6 +79,11 @@ var profileBands = [numProfiles][]Band{
 		{Type: Peaking, FreqHz: 1500, GainDB: 2, Q: 0.8},
 		{Type: Peaking, FreqHz: 3500, GainDB: 3, Q: 1},
 	},
+	Tube: {
+		{Type: LowShelf, FreqHz: 100, GainDB: 2},
+		{Type: Peaking, FreqHz: 3000, GainDB: 1, Q: 1},
+		{Type: HighShelf, FreqHz: 9000, GainDB: -2},
+	},
 }
 
 // profileCompression donne, pour les profils qui en ont, le compresseur
@@ -88,6 +94,7 @@ var profileCompression = [numProfiles]*CompressorSettings{
 	HipHop:     {ThresholdDB: -20, Ratio: 3, AttackMs: 20, ReleaseMs: 100, KneeDB: 6, MakeupDB: 1.5},
 	Electronic: {ThresholdDB: -20, Ratio: 4, AttackMs: 5, ReleaseMs: 80, KneeDB: 6, MakeupDB: 1.5},
 	Vocal:      {ThresholdDB: -22, Ratio: 3, AttackMs: 5, ReleaseMs: 150, KneeDB: 6, MakeupDB: 3},
+	Tube:       {ThresholdDB: -20, Ratio: 1.8, AttackMs: 15, ReleaseMs: 150, KneeDB: 6}, // léger affaissement (sag)
 }
 
 // profileSaturation donne, pour les profils qui en ont, la saturation douce et
@@ -99,6 +106,7 @@ var profileSaturation = [numProfiles]saturation{
 	HipHop:     {driveDB: 3, outputDB: 0},
 	Electronic: {driveDB: 3, outputDB: 0},
 	Jazz:       {driveDB: 3, bias: 0.2, outputDB: 2},
+	Tube:       {driveDB: 6, bias: 0.2, outputDB: 0},
 }
 
 // Profiles renvoie tous les profils disponibles.
@@ -179,7 +187,7 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 		out = sat.outputDB * math.Min(intensity, 1)
 	}
 	return newEqualizerReader(src, sampleRate, channels, bands, comp,
-		&saturation{driveDB: sat.driveDB * intensity, bias: sat.bias * intensity, outputDB: out})
+		&saturation{driveDB: sat.driveDB * intensity, bias: sat.bias * intensity, outputDB: out, stages: sat.stages})
 }
 
 // peakResponseDB renvoie le gain maximal (en dB) de la chaîne de filtres,
