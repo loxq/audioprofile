@@ -83,7 +83,11 @@ var profileBands = [numProfiles][]Band{
 // profileCompression donne, pour les profils qui en ont, le compresseur
 // appliqué juste après l'égalisation, à intensité 1 (nil = aucun).
 var profileCompression = [numProfiles]*CompressorSettings{
-	Rock: {ThresholdDB: -20, Ratio: 3, AttackMs: 10, ReleaseMs: 120, KneeDB: 6},
+	Rock:       {ThresholdDB: -20, Ratio: 3, AttackMs: 10, ReleaseMs: 120, KneeDB: 6},
+	Pop:        {ThresholdDB: -20, Ratio: 2.5, AttackMs: 15, ReleaseMs: 150, KneeDB: 6, MakeupDB: 2.5},
+	HipHop:     {ThresholdDB: -20, Ratio: 3, AttackMs: 20, ReleaseMs: 100, KneeDB: 6, MakeupDB: 1.5},
+	Electronic: {ThresholdDB: -20, Ratio: 4, AttackMs: 5, ReleaseMs: 80, KneeDB: 6, MakeupDB: 1.5},
+	Vocal:      {ThresholdDB: -22, Ratio: 3, AttackMs: 5, ReleaseMs: 150, KneeDB: 6, MakeupDB: 3},
 }
 
 // profileSaturation donne, pour les profils qui en ont, la saturation douce et
@@ -91,7 +95,10 @@ var profileCompression = [numProfiles]*CompressorSettings{
 // driveDB : gain poussé dans la saturation (plus c'est haut, plus le grain est marqué) ;
 // outputDB : gain de sortie final, pour régler le niveau après saturation.
 var profileSaturation = [numProfiles]struct{ driveDB, outputDB float64 }{
-	Rock: {driveDB: 6, outputDB: -1},
+	Rock:       {driveDB: 6, outputDB: -1},
+	HipHop:     {driveDB: 3, outputDB: 0},
+	Electronic: {driveDB: 3, outputDB: 0},
+	Jazz:       {driveDB: 2, outputDB: 0},
 }
 
 // Profiles renvoie tous les profils disponibles.

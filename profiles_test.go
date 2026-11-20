@@ -76,7 +76,18 @@ func TestProfilesPeakAtZeroDB(t *testing.T) {
 	}
 }
 
+// withoutDynamics désactive compresseurs et saturations le temps d'un test,
+// pour n'examiner que la courbe d'égalisation.
+func withoutDynamics(t *testing.T) {
+	t.Helper()
+	comp, sat := profileCompression, profileSaturation
+	profileCompression = [numProfiles]*CompressorSettings{}
+	profileSaturation = [numProfiles]struct{ driveDB, outputDB float64 }{}
+	t.Cleanup(func() { profileCompression, profileSaturation = comp, sat })
+}
+
 func TestProfileShape(t *testing.T) {
+	withoutDynamics(t)
 	const fs = 44100
 	ratio := func(p Profile, freq float64) float64 {
 		in := sine(freq, fs, fs)
@@ -97,11 +108,12 @@ func TestProfileShape(t *testing.T) {
 	if !(bm(HipHop) > bm(Classical)*1.5) {
 		t.Errorf("HipHop doit avoir bien plus de basses relatives que Classical (%.2f vs %.2f)", bm(HipHop), bm(Classical))
 	}
-	// Sans saturation, un profil ne rend jamais plus fort que l'entrée (pic à 0 dB).
-	// Les profils saturés (Rock) relèvent volontairement les signaux faibles :
-	// leur absence d'écrêtage est vérifiée dans saturation_test.go.
+	// Sans compresseur ni saturation, un profil ne rend jamais plus fort que
+	// l'entrée (pic à 0 dB). Les autres relèvent volontairement le niveau
+	// (compensation, saturation) : leur absence d'écrêtage est vérifiée dans
+	// TestProfilesNoClipping.
 	for _, p := range Profiles() {
-		if profileSaturation[p].driveDB != 0 || profileSaturation[p].outputDB != 0 {
+		if hasDynamicsEffects(p) {
 			continue
 		}
 		for _, f := range []float64{40, 100, 400, 1000, 3000, 8000, 15000} {
@@ -118,5 +130,44 @@ func TestProfileStereoOddChunks(t *testing.T) {
 	ref, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), 44100, 2, Rock, 0.7))
 	if err != nil || !bytes.Equal(out, ref) {
 		t.Fatalf("err=%v : la lecture fragmentée doit donner le même résultat", err)
+	}
+}
+
+// hasDynamicsEffects indique si le profil a un compresseur ou une saturation.
+func hasDynamicsEffects(p Profile) bool {
+	return profileCompression[p] != nil || profileSaturation[p] != struct{ driveDB, outputDB float64 }{}
+}
+
+// Les profils avec effets rendent à peu près le niveau d'entrée à un niveau
+// d'écoute normal (-18 dBFS, 1 kHz) : compensation du gain automatique.
+func TestProfilesLevelNearUnity(t *testing.T) {
+	const fs = 44100
+	for _, p := range Profiles() {
+		if !hasDynamicsEffects(p) {
+			continue
+		}
+		in := tone(1000, ampOf(-18), fs, fs)
+		out, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), fs, 1, p, 1))
+		got := 20 * math.Log10(rms(out)/rms(in))
+		t.Logf("%-10v : %+.2f dB", p, got)
+		if math.Abs(got) > 0.75 {
+			t.Errorf("%v : niveau %+.2f dB, attendu ≈ 0 ± 0.75", p, got)
+		}
+	}
+}
+
+// À -3 dBFS (crête réaliste) aucun profil ne doit écrêter, à aucune fréquence.
+func TestProfilesNoClipping(t *testing.T) {
+	const fs = 44100
+	for _, p := range Profiles() {
+		for _, f := range []float64{40, 100, 400, 1000, 3000, 8000, 15000} {
+			in := tone(f, ampOf(-3), fs, fs)
+			out, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), fs, 1, p, 1))
+			for i := 0; i+1 < len(out); i += 2 {
+				if v := int16(uint16(out[i]) | uint16(out[i+1])<<8); v == 32767 || v == -32768 {
+					t.Fatalf("%v @%.0f Hz : écrêtage à l'échantillon %d", p, f, i/2)
+				}
+			}
+		}
 	}
 }

@@ -129,8 +129,7 @@ io.Copy(out, bassboost.ApplyProfile(in, 44100, 2, bassboost.Rock, 0.8))
 
 - **Intensité** : de `0` (aucun effet) à `1` (profil complet) ; elle met les gains à l'échelle. Les valeurs hors de cet intervalle sont ramenées dedans.
 - **Gain automatique** : pour éviter l'écrêtage, un gain global négatif est ajouté afin que la fréquence la plus renforcée reste à 0 dB. Le volume perçu baisse donc d'autant, à compenser en aval si besoin.
-- **Compresseur (Rock)** : juste après l'égalisation, Rock applique un compresseur (seuil −20 dBFS, ratio 3:1, attaque 10 ms, relâchement 120 ms, genou 6 dB). Le ratio suit l'intensité (de 1:1 à 3:1). Sur un sinus à 1 kHz, l'écart de gain entre un signal faible (−40 dBFS) et un fort (−6 dBFS) passe de 0,6 dB à 5,3 dB.
-- **Saturation douce (Rock)** : après le compresseur, le profil Rock pousse le signal dans une saturation en tangente hyperbolique (+6 dB de drive), puis applique un gain de sortie de −1 dB. Les pics sont arrondis au lieu d'être écrêtés, ce qui ajoute des harmoniques impaires (grain, chaleur). Cela relève aussi les signaux faibles, ce qui compense la baisse de volume du gain automatique : à −18 dBFS et 1 kHz, Rock rend à peu près le niveau d'entrée (mesuré à +0,04 dB). Drive et gain de sortie suivent l'intensité. Les autres profils n'ont pas de saturation. Voir [saturation.go](saturation.go).
+- **Effets dynamiques** : certains profils ajoutent, après l'égalisation, un compresseur puis une saturation douce avec gain de sortie (voir plus bas). Leur dosage suit l'intensité : le ratio va de 1:1 au ratio du profil, et le drive de 0 dB à sa valeur. Les profils qui ne figurent pas dans le tableau (Flat, Classical, Acoustic) gardent la dynamique d'origine.
 - **Valeurs** : les courbes sont des points de départ raisonnables, pas une norme (il n'existe pas de standard officiel). Elles sont définies dans [profiles.go](profiles.go).
 - **Utilitaires** : `Profiles()` liste les profils, `ParseProfile("rock")` en retrouve un par son nom (utile pour un flag CLI), et `p.Bands()` renvoie les bandes d'un profil pour partir de lui avec `Equalizer`.
 
@@ -160,6 +159,19 @@ io.Copy(out, bassboost.Compressor(in, 44100, 2, bassboost.CompressorSettings{
 - Sans effet (flux renvoyé tel quel) si `sampleRate <= 0`, ou si `Ratio <= 1` et `MakeupDB = 0`.
 - Dans `ApplyProfile`, la chaîne est : égalisation → compresseur → saturation → gain de sortie.
 
+#### Effets dynamiques par profil
+
+| Profil       | Compresseur (seuil, ratio, attaque / relâchement, compensation) | Saturation (drive / gain de sortie) | Pourquoi |
+|--------------|------------------------------------------------------------------|-------------------------------------|----------|
+| `Rock`       | −20 dBFS, 3:1, 10 / 120 ms, 0 dB                                 | +6 dB / −1 dB                       | densité et grain |
+| `Pop`        | −20 dBFS, 2,5:1, 15 / 150 ms, +2,5 dB                            | —                                   | genre très compressé, mais propre |
+| `HipHop`     | −20 dBFS, 3:1, 20 / 100 ms, +1,5 dB                              | +3 dB / 0 dB                        | attaque lente pour garder le punch, chaleur des basses |
+| `Electronic` | −20 dBFS, 4:1, 5 / 80 ms, +1,5 dB                                | +3 dB / 0 dB                        | son dense et serré |
+| `Vocal`      | −22 dBFS, 3:1, 5 / 150 ms, +3 dB                                 | —                                   | régularité et intelligibilité de la voix |
+| `Jazz`       | —                                                                | +2 dB / 0 dB                        | chaleur légère sans écraser la dynamique |
+
+Tous ont un genou de 6 dB. La compensation du compresseur et la saturation relèvent le niveau pour contrebalancer la baisse du gain automatique : à −18 dBFS et 1 kHz, chaque profil avec effets rend le niveau d'entrée à moins de 0,4 dB près. La saturation, tangente hyperbolique normalisée, arrondit les pics et ajoute des harmoniques impaires ; son effet est surtout audible dans les basses, car le gain automatique compense le drive là où l'égalisation est sous son pic. Les réglages sont dans `profileCompression` et `profileSaturation` ([profiles.go](profiles.go)).
+
 ### Tester avec ffmpeg
 
 ```sh
@@ -186,6 +198,7 @@ Les tests vérifient notamment :
 - **TestEqualizerQ**, **TestEqualizerIgnoredBands**, **TestEqualizerGainClamped**, **TestEqualizerStereoOddChunks** : effet de Q, bandes ignorées, limitation du gain à ±24 dB, lecture fragmentée identique à une lecture en un bloc.
 - **TestCompressor\*** / **TestScaleCompression** / **TestRockCompressesDynamics** : courbe statique (gains attendus sous, au et au-dessus du seuil), genou doux, attaque et relâchement progressifs, détection liée stéréo, coude franc sans NaN, compensation seule, lecture fragmentée, mise à l'échelle par l'intensité, effet réel sur Rock.
 - **TestSaturator\*** / **TestSaturation\*** / **TestRock\*** / **TestSaturatedOutputNeverClips** : forme de la saturation (pleine échelle conservée, monotone, impaire), harmoniques impaires uniquement, croissance avec l'intensité, niveau de Rock proche de l'entrée, pas d'écrêtage sur un signal très fort.
+- **TestProfilesLevelNearUnity**, **TestProfilesNoClipping** : niveau des profils avec effets proche de l'entrée à −18 dBFS, aucun écrêtage à −3 dBFS sur tout le spectre.
 - **TestProfile\*** : noms et `ParseProfile`, profils identiques au signal d'origine (`Flat`, intensité nulle), pic à 0 dB après compensation, forme de la courbe (Rock en « sourire », Vocal, HipHop), lecture fragmentée.
 - **TestMidGain** : `MidBoost` agit à 1 kHz sans toucher 40 Hz ni 15 kHz.
 - **TestMidZeroIsIdentity** : intensité nulle = signal intact.
@@ -196,7 +209,8 @@ Les tests vérifient notamment :
 
 - Pas de gestion des en-têtes WAV ni d'autres formats que s16le.
 - Les préréglages `BassBoost`, `MidBoost` et `TrebleBoost` ont leurs fréquences et leur gain maximal fixés dans le code (constantes `cutoffHz`, `midCenterHz`, `midQ`, `trebleCutoffHz` et `maxGainDB`) ; utiliser `Equalizer` pour les régler.
-- Les profils réduisent le volume (gain automatique anti-écrêtage) ; Rock le compense en partie par sa saturation. Il n'y a pas de limiteur à anticipation (look-ahead) : pendant le temps d'attaque du compresseur, un pic très bref passe, la saturation de Rock l'arrondit ensuite.
+- Les profils réduisent le volume (gain automatique anti-écrêtage) ; les profils avec effets le compensent en partie (voir le tableau). Il n'y a pas de limiteur à anticipation (look-ahead) : pendant le temps d'attaque du compresseur, un pic très bref passe, la saturation de Rock l'arrondit ensuite.
+- Sans anticipation, un signal à pleine échelle (0 dBFS) dès son premier échantillon peut écrêter brièvement sur Pop et Vocal, avant que l'attaque du compresseur ne réagisse (quelques échantillons). À −3 dBFS, aucun profil n'écrête.
 - La saturation n'est pas suréchantillonnée : à fort drive sur des aigus très forts, un peu de repliement de spectre (aliasing) est possible.
 - Le dosage de la saturation de Rock dépend de la fréquence : le gain automatique compense le drive là où l'égalisation est inférieure à son pic, donc le grain s'entend surtout dans les basses.
 - Pas de limiteur : un fort gain sur un signal déjà proche de la saturation sera écrêté (distorsion).
