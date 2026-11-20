@@ -247,6 +247,21 @@ Mesures sur trois morceaux de `testdata/` (via le CLI, intensité 1, sans baffle
 - **Sur un morceau calme** (RMS −21 dBFS), le niveau reste à moins de 1,5 dB de l'original. **Sur un master très fort** (RMS −9,7 dBFS, crête 0 dBFS), la saturation compresse les passages forts : le volume baisse de 2 à 6 dB.
 - **`AmpClean` et `AmpCrunch` modifient peu un morceau calme** (leur drive y sature à peine : écart avec l'original de −14 dB sur le premier morceau). À l'intensité 2, `AmpCrunch` s'en écarte nettement plus (−7 dB). `AmpLead` est audible dès l'intensité 1 (−8 dB). Sur un master très fort, l'écart est plus faible (la saturation est déjà engagée).
 
+### Élargisseur stéréo
+
+```go
+func StereoWidth(src io.Reader, sampleRate, channels int, width float64) io.Reader
+```
+
+Traitement mid/side : `width` multiplie le signal « côté » (`(G − D) / 2`) au-dessus de **200 Hz**. `1` = inchangé, `1,5` à `2` = nettement plus large, `0` = mono au-dessus de 200 Hz ; la valeur est ramenée dans `[0, MaxWidth]` (`MaxWidth = 3`).
+
+- Le milieu (`(G + D) / 2` : voix, grosse caisse, basse) n'est jamais modifié, donc **`G + D` est conservé** : le résultat reste compatible mono (à 1 LSB d'arrondi près).
+- Sous 200 Hz, le côté garde son niveau (il est seulement déphasé par le filtre de séparation de Linkwitz-Riley d'ordre 4) : les basses restent au centre.
+- Seuls les flux stéréo (`channels = 2`) sont traités ; mono, plus de deux canaux, `width = 1` ou `NaN` renvoient le flux tel quel.
+- Élargir peut faire dépasser la pleine échelle à un signal déjà fort : les pics sont arrondis par un plafond doux (genou à 0,8), pas écrêtés net. Il n'y a pas de gain de compensation : le niveau du centre reste le même.
+
+C'est un effet de **spatialisation** : il ne touche pas à la dynamique.
+
 ### Préréglages à une bande
 
 ```go
@@ -327,6 +342,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire, asymétrique avec biais), harmoniques impaires seulement à biais nul et paires avec biais, composante continue retirée, silence exact, réduction du repliement (≥ 20 dB), plafond doux (jamais ±32767 après arrondi), états par canal sans diaphonie, seuls les profils asymétriques (Jazz, Tube) produisent des harmoniques paires, gain des petits signaux qui croît avec le drive malgré le biais (régression), croissance avec l'intensité, niveau de Rock |
 | `tubeamp_presets_test.go` | noms et `ParseTubeAmpPreset`, `Settings()` copie, `Scaled` (0, 1, 2, plafonds, gain de sortie positif), intensité nulle, niveau proche de l'entrée, distorsion croissante de Clean à Lead, aucun écrêtage jusqu'à l'intensité 3 avec ou sans baffle, silence et lecture fragmentée |
 | `tubeamp_test.go` | identité sans réglage, polarité conservée de 1 à 4 étages, harmoniques paires sans composante continue, correcteur de timbre (±6 dB), baffle (aigus, très graves, présence, résonance), pic des filtres finaux à 0 dB, basse fréquence d'échantillonnage, gain de sortie, silence exact, états par canal et lecture fragmentée, aucun écrêtage même à fond |
+| `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
 | `cmd/audioprofile/main_test.go` | liste des profils et des amplis, traitement, identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 

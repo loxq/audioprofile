@@ -48,12 +48,14 @@ func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader 
 }
 
 // chain décrit la chaîne de traitement d'un lecteur, dans l'ordre :
-// égalisation → compresseur → saturation (+ gain de sortie) → filtres finaux.
+// égalisation → compresseur → saturation (+ gain de sortie) → filtres finaux
+// → élargisseur stéréo.
 type chain struct {
-	bands []Band              // égalisation
-	comp  *CompressorSettings // compresseur (nil = aucun)
-	sat   *saturation         // saturation (nil = aucune)
-	post  []coeffs            // filtres appliqués après la saturation (timbre, baffle…)
+	bands  []Band              // égalisation
+	comp   *CompressorSettings // compresseur (nil = aucun)
+	sat    *saturation         // saturation (nil = aucune)
+	post   []coeffs            // filtres appliqués après la saturation (timbre, baffle…)
+	stereo *stereoSettings     // élargisseur stéréo (nil = aucun)
 }
 
 // newEqualizerReader est Equalizer avec, en option, un compresseur puis une
@@ -79,9 +81,13 @@ func newChainReader(src io.Reader, sampleRate, channels int, c chain) io.Reader 
 		}
 		post = c.post
 	}
+	var wid *widener
+	if sampleRate > 0 {
+		wid = newWidener(float64(sampleRate), channels, c.stereo)
+	}
 	r := &reader{
-		src: src, channels: channels, sat: sats, comp: cmp,
-		passthru: len(coefs) == 0 && sats == nil && cmp == nil && len(post) == 0,
+		src: src, channels: channels, sat: sats, comp: cmp, wid: wid,
+		passthru: len(coefs) == 0 && sats == nil && cmp == nil && len(post) == 0 && wid == nil,
 		frame:    make([]float64, channels),
 	}
 	if !r.passthru {
@@ -150,6 +156,7 @@ type reader struct {
 	comp     *compressor  // compresseur, après les filtres (peut être nil)
 	sat      []*saturator // saturation + gain de sortie, un par canal, après le compresseur (peut être nil)
 	post     [][]biquad   // post[canal][filtre] : filtres appliqués après la saturation
+	wid      *widener     // élargisseur stéréo, après les filtres finaux (peut être nil)
 	frame    []float64    // tampon de travail : une trame (un échantillon par canal)
 	passthru bool
 
@@ -209,12 +216,20 @@ func (r *reader) process(b []byte) []byte {
 			if r.sat != nil {
 				y = r.sat[ch].apply(y)
 			}
-			if len(r.post[ch]) > 0 {
-				for k := range r.post[ch] {
-					y = r.post[ch][k].process(y)
-				}
-				// les filtres finaux déphasent l'onde saturée : ses pics peuvent
-				// dépasser la pleine échelle même avec un gain de 0 dB au maximum
+			for k := range r.post[ch] {
+				y = r.post[ch][k].process(y)
+			}
+			r.frame[ch] = y
+		}
+		if r.wid != nil {
+			r.wid.apply(r.frame)
+		}
+		for ch := 0; ch < r.channels; ch++ {
+			y := r.frame[ch]
+			if len(r.post[ch]) > 0 || r.wid != nil {
+				// les filtres finaux déphasent l'onde saturée et l'élargissement additionne
+				// le côté au milieu : les pics peuvent dépasser la pleine échelle même avec
+				// un gain de 0 dB au maximum
 				y = 32768 * softCeilingAt(y/32768, postCeilingKnee)
 			}
 			// écrêtage pour éviter le débordement d'entier
