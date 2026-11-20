@@ -1,8 +1,8 @@
-# poc-audio-profiles
+# audioprofile
 
 Preuve de concept en Go d'un **égaliseur trois bandes (basses / médiums / aigus)** appliqué à un flux audio PCM, au fil de l'eau.
 
-Le paquet `bassboost` expose trois fonctions qui enveloppent un `io.Reader` PCM et renvoient un autre `io.Reader` :
+Le paquet `audioprofile` expose trois fonctions qui enveloppent un `io.Reader` PCM et renvoient un autre `io.Reader` :
 
 - `BassBoost` : renforce ou atténue les **basses** ;
 - `MidBoost` : renforce ou atténue les **fréquences intermédiaires** (médiums) ;
@@ -40,7 +40,7 @@ import (
 	"io"
 	"os"
 
-	bassboost "github.com/loxq/audioprofile"
+	"github.com/loxq/audioprofile"
 )
 
 func main() {
@@ -51,11 +51,9 @@ func main() {
 	defer out.Close()
 
 	// +0.8 : basses fortement renforcées
-	io.Copy(out, bassboost.BassBoost(in, 44100, 2, 0.8))
+	io.Copy(out, audioprofile.BassBoost(in, 44100, 2, 0.8))
 }
 ```
-
-Le chemin du module est `github.com/loxq/audioprofile` mais le paquet s'appelle `bassboost` : l'alias `bassboost` à l'import rend cela explicite.
 
 ### Signatures
 
@@ -92,13 +90,13 @@ type Band struct {
 Exemple, une courbe « sourire » pour du rock :
 
 ```go
-rock := []bassboost.Band{
-	{Type: bassboost.LowShelf, FreqHz: 100, GainDB: 5},
-	{Type: bassboost.Peaking, FreqHz: 400, GainDB: -4, Q: 1},  // creux anti-« boue »
-	{Type: bassboost.Peaking, FreqHz: 3000, GainDB: 4, Q: 1},  // présence
-	{Type: bassboost.HighShelf, FreqHz: 8000, GainDB: 3},
+rock := []audioprofile.Band{
+	{Type: audioprofile.LowShelf, FreqHz: 100, GainDB: 5},
+	{Type: audioprofile.Peaking, FreqHz: 400, GainDB: -4, Q: 1},  // creux anti-« boue »
+	{Type: audioprofile.Peaking, FreqHz: 3000, GainDB: 4, Q: 1},  // présence
+	{Type: audioprofile.HighShelf, FreqHz: 8000, GainDB: 3},
 }
-io.Copy(out, bassboost.Equalizer(in, 44100, 2, rock))
+io.Copy(out, audioprofile.Equalizer(in, 44100, 2, rock))
 ```
 
 - **Q** : plus il est grand, plus la bande est étroite. Pour une cloche (`Peaking`), le gain demandé est atteint exactement à la fréquence centrale quel que soit Q.
@@ -112,7 +110,7 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 ```
 
 ```go
-io.Copy(out, bassboost.ApplyProfile(in, 44100, 2, bassboost.Rock, 0.8))
+io.Copy(out, audioprofile.ApplyProfile(in, 44100, 2, audioprofile.Rock, 0.8))
 ```
 
 | Profil       | Nom (`ParseProfile`) | Caractère                                              |
@@ -149,7 +147,7 @@ type CompressorSettings struct {
 ```
 
 ```go
-io.Copy(out, bassboost.Compressor(in, 44100, 2, bassboost.CompressorSettings{
+io.Copy(out, audioprofile.Compressor(in, 44100, 2, audioprofile.CompressorSettings{
 	ThresholdDB: -20, Ratio: 3, AttackMs: 10, ReleaseMs: 120, KneeDB: 6, MakeupDB: 2,
 }))
 ```

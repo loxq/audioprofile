@@ -15,7 +15,7 @@ import (
 	"os"
 	"strings"
 
-	bassboost "github.com/loxq/audioprofile"
+	"github.com/loxq/audioprofile"
 )
 
 func main() {
@@ -60,7 +60,7 @@ Options :
 	}
 
 	if *list {
-		for _, p := range bassboost.Profiles() {
+		for _, p := range audioprofile.Profiles() {
 			fmt.Fprintln(stdout, p)
 		}
 		return nil
@@ -70,7 +70,7 @@ Options :
 		fs.Usage()
 		return errors.New("-profile est obligatoire (profils : " + profileNames() + ")")
 	}
-	p, ok := bassboost.ParseProfile(*profile)
+	p, ok := audioprofile.ParseProfile(*profile)
 	if !ok {
 		return fmt.Errorf("profil inconnu %q (profils : %s)", *profile, profileNames())
 	}
@@ -91,7 +91,7 @@ Options :
 	}
 
 	out := bufio.NewWriterSize(stdout, 64*1024)
-	if _, err := io.Copy(out, bassboost.ApplyProfile(stdin, *rate, *channels, p, *intensity)); err != nil {
+	if _, err := io.Copy(out, audioprofile.ApplyProfile(stdin, *rate, *channels, p, *intensity)); err != nil {
 		return fmt.Errorf("traitement : %w", err)
 	}
 	return out.Flush()
@@ -99,7 +99,7 @@ Options :
 
 func profileNames() string {
 	var names []string
-	for _, p := range bassboost.Profiles() {
+	for _, p := range audioprofile.Profiles() {
 		names = append(names, p.String())
 	}
 	return strings.Join(names, ", ")
