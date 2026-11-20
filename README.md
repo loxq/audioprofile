@@ -8,7 +8,9 @@ Le paquet `bassboost` expose trois fonctions qui enveloppent un `io.Reader` PCM 
 - `MidBoost` : renforce ou atténue les **fréquences intermédiaires** (médiums) ;
 - `TrebleBoost` : renforce ou atténue les **aigus**.
 
-Elles sont chaînables : `TrebleBoost(MidBoost(BassBoost(src, ...), ...), ...)`.
+- `Equalizer` : **égaliseur paramétrique** à bandes libres (type, fréquence, gain en dB, Q), appliquées en une seule passe.
+
+`BassBoost`, `MidBoost` et `TrebleBoost` sont des préréglages à une bande, réglés par une simple intensité. Toutes ces fonctions sont chaînables : `TrebleBoost(MidBoost(BassBoost(src, ...), ...), ...)`. Pour plusieurs bandes, `Equalizer` est plus efficace (une seule boucle sur les échantillons).
 
 ## Fonctionnement
 
@@ -72,6 +74,35 @@ Les paramètres sont identiques pour les trois fonctions.
 
 Si `intensity == 0` ou `sampleRate <= 0`, le flux est renvoyé tel quel (pas de filtrage). C'est aussi le cas quand la fréquence de coupure dépasse Nyquist (pour `TrebleBoost`, `sampleRate < 8000`).
 
+### Égaliseur paramétrique
+
+```go
+func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader
+
+type Band struct {
+	Type   BandType // LowShelf, Peaking ou HighShelf
+	FreqHz float64  // fréquence de coupure (shelf) ou centrale (peaking)
+	GainDB float64  // gain en dB, ramené dans [-24, +24]
+	Q      float64  // facteur de qualité ; <= 0 → 1/√2
+}
+```
+
+Exemple, une courbe « sourire » pour du rock :
+
+```go
+rock := []bassboost.Band{
+	{Type: bassboost.LowShelf, FreqHz: 100, GainDB: 5},
+	{Type: bassboost.Peaking, FreqHz: 400, GainDB: -4, Q: 1},  // creux anti-« boue »
+	{Type: bassboost.Peaking, FreqHz: 3000, GainDB: 4, Q: 1},  // présence
+	{Type: bassboost.HighShelf, FreqHz: 8000, GainDB: 3},
+}
+io.Copy(out, bassboost.Equalizer(in, 44100, 2, rock))
+```
+
+- **Q** : plus il est grand, plus la bande est étroite. Pour une cloche (`Peaking`), le gain demandé est atteint exactement à la fréquence centrale quel que soit Q.
+- Les bandes sans effet (gain nul ou NaN, fréquence <= 0 ou >= Nyquist) sont ignorées. S'il n'en reste aucune, le flux est renvoyé tel quel.
+- Les bandes sont appliquées dans l'ordre, en série.
+
 ### Tester avec ffmpeg
 
 ```sh
@@ -94,6 +125,8 @@ Les tests vérifient notamment :
 - **TestCut** : avec une intensité négative, les graves sont atténués, les aigus inchangés.
 - **TestZeroIsIdentity** : une intensité de 0 laisse le signal intact.
 - **TestStereoOddChunks** : le recollage des trames fonctionne avec des lectures fragmentées en stéréo.
+- **TestEqualizerMultiBand** : une courbe à quatre bandes donne les gains attendus à chaque fréquence (à moins de 0,7 dB).
+- **TestEqualizerQ**, **TestEqualizerIgnoredBands**, **TestEqualizerGainClamped**, **TestEqualizerStereoOddChunks** : effet de Q, bandes ignorées, limitation du gain à ±24 dB, lecture fragmentée identique à une lecture en un bloc.
 - **TestMidGain** : `MidBoost` agit à 1 kHz sans toucher 40 Hz ni 15 kHz.
 - **TestMidZeroIsIdentity** : intensité nulle = signal intact.
 - **TestTrebleGain** : `TrebleBoost` amplifie/atténue un sinus à 12 kHz sans toucher un sinus à 100 Hz.
@@ -102,5 +135,5 @@ Les tests vérifient notamment :
 ## Limites connues (POC)
 
 - Pas de gestion des en-têtes WAV ni d'autres formats que s16le.
-- Fréquence de coupure et gain maximal fixés dans le code (constantes `cutoffHz`, `midCenterHz`, `midQ`, `trebleCutoffHz` et `maxGainDB`).
+- Les préréglages `BassBoost`, `MidBoost` et `TrebleBoost` ont leurs fréquences et leur gain maximal fixés dans le code (constantes `cutoffHz`, `midCenterHz`, `midQ`, `trebleCutoffHz` et `maxGainDB`) ; utiliser `Equalizer` pour les régler.
 - Pas de limiteur : un fort gain sur un signal déjà proche de la saturation sera écrêté (distorsion).
