@@ -334,3 +334,28 @@ func TestSoftCeilingNeverRoundsToFullScale(t *testing.T) {
 		}
 	}
 }
+
+// Régression : l'asymétrie est indépendante du drive. Avec un biais exprimé dans
+// le domaine d'entrée, le gain des petits signaux s'effondrait quand le drive
+// augmentait (sech²(g·b) → 0).
+func TestBiasDoesNotCollapseSmallSignalGain(t *testing.T) {
+	gain := func(driveDB float64) float64 {
+		s := mustSat(t, 44100, saturation{driveDB: driveDB, bias: 0.4})
+		return s.shape(0.0005) / 0.0005
+	}
+	prev := 0.0
+	for _, d := range []float64{3, 6, 12, 18, 24} {
+		g := gain(d)
+		if g <= prev {
+			t.Errorf("drive %.0f dB : gain des petits signaux %.2f, doit croître avec le drive (précédent %.2f)", d, g, prev)
+		}
+		prev = g
+	}
+	// gain théorique : g·sech²(β) / max(|f(1)|, |f(-1)|)
+	s := mustSat(t, 44100, saturation{driveDB: 12, bias: 0.4})
+	g := math.Pow(10, 12.0/20)
+	want := g / math.Pow(math.Cosh(0.4), 2) * s.norm
+	if got := s.shape(0.0005) / 0.0005; math.Abs(got-want) > 0.01*want {
+		t.Errorf("gain %.4f, attendu g·sech²(β)·norm = %.4f", got, want)
+	}
+}

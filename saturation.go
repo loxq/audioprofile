@@ -5,7 +5,7 @@ import "math"
 const (
 	maxDriveDB  = 24.0 // drive maximal accepté
 	maxOutputDB = 24.0 // |gain de sortie| maximal accepté
-	maxBias     = 0.5  // |asymétrie| maximale acceptée
+	maxBias     = 1.0  // |asymétrie| maximale acceptée
 
 	oversample   = 4    // facteur de suréchantillonnage de l'étage non linéaire
 	oversampleHz = 0.43 // coupure des filtres de suréchantillonnage, en fraction de la fréquence d'échantillonnage
@@ -40,7 +40,7 @@ var butterworth8Q = [4]float64{0.5098, 0.6013, 0.9000, 2.5629}
 // saturation décrit l'étage de saturation d'un profil. Un champ nul = sans effet.
 type saturation struct {
 	driveDB  float64 // gain poussé dans la saturation (plus c'est haut, plus le grain est marqué)
-	bias     float64 // asymétrie : 0 = symétrique (harmoniques impaires), > 0 ajoute des harmoniques paires
+	bias     float64 // asymétrie β : 0 = symétrique (harmoniques impaires), > 0 ajoute des harmoniques paires
 	outputDB float64 // gain de sortie final, pour régler le niveau après saturation
 	stages   int     // étages en cascade (0 ou 1 = un seul) ; le drive est réparti entre eux
 }
@@ -58,16 +58,22 @@ func (h *highPass1) process(x float64) float64 {
 // Il garde un état (filtres de suréchantillonnage, filtre anti-continu) : il en
 // faut donc une instance par canal.
 //
-// Avec g = 10^(driveDB/20) et un biais b, sur x normalisé dans [-1, 1] :
+// Avec g = 10^(driveDB/20) et une asymétrie β, sur x normalisé dans [-1, 1] :
 //
-//	f(x) = tanh(g·(x+b)) − tanh(g·b)
+//	f(x) = tanh(g·x + β) − tanh(β)
 //
 // puis normalisation pour que la pleine échelle reste à la pleine échelle.
-// Le terme tanh(g·b) garantit f(0) = 0 (le silence reste le silence). Avec
-// b = 0 la courbe est symétrique (harmoniques impaires seulement) ; avec b > 0
+// Le terme tanh(β) garantit f(0) = 0 (le silence reste le silence). Avec
+// β = 0 la courbe est symétrique (harmoniques impaires seulement) ; avec β > 0
 // elle est asymétrique, comme celle d'un tube, et ajoute des harmoniques paires
 // (2e, 4e…), perçues comme plus chaudes. Un filtre passe-haut retire alors la
 // composante continue que l'asymétrie fait apparaître.
+//
+// β est exprimé dans l'argument de tanh, donc indépendant du drive : le gain des
+// petits signaux vaut g·sech²(β) (au facteur de normalisation près) et ne
+// s'effondre pas quand on augmente le drive. (Un biais exprimé dans le domaine
+// d'entrée, tanh(g·(x+b)), repousserait au contraire le point de fonctionnement
+// dans la zone saturée à mesure que g grandit : sech²(g·b) → 0.)
 //
 // La sortie d'une onde saturée, une fois limitée en bande, peut dépasser la
 // pleine échelle (la fondamentale d'une onde carrée vaut 4/π ≈ 1,27 fois son
@@ -83,7 +89,7 @@ func (h *highPass1) process(x float64) float64 {
 type saturator struct {
 	drive   float64 // g ; 0 = pas de saturation (gain de sortie seul)
 	bias    float64
-	biasOff float64 // tanh(g·b)
+	biasOff float64 // tanh(β)
 	norm    float64 // normalisation de la pleine échelle
 	out     float64 // gain de sortie linéaire
 
@@ -113,8 +119,8 @@ func newSaturators(fs float64, channels int, s saturation) []*saturator {
 		}
 		proto.drive = math.Pow(10, driveDB/float64(proto.stages)/20) // drive réparti entre les étages
 		proto.bias = math.Max(-maxBias, math.Min(maxBias, s.bias))
-		proto.biasOff = math.Tanh(proto.drive * proto.bias)
-		raw := func(x float64) float64 { return math.Tanh(proto.drive*(x+proto.bias)) - proto.biasOff }
+		proto.biasOff = math.Tanh(proto.bias)
+		raw := func(x float64) float64 { return math.Tanh(proto.drive*x+proto.bias) - proto.biasOff }
 		proto.norm = 1 / math.Max(math.Abs(raw(1)), math.Abs(raw(-1)))
 
 		fsUp := fs * oversample
@@ -141,7 +147,7 @@ func newSaturators(fs float64, channels int, s saturation) []*saturator {
 
 // shape est la courbe de saturation statique, sur x normalisé.
 func (s *saturator) shape(x float64) float64 {
-	return (math.Tanh(s.drive*(x+s.bias)) - s.biasOff) * s.norm
+	return (math.Tanh(s.drive*x+s.bias) - s.biasOff) * s.norm
 }
 
 // apply traite un échantillon exprimé dans l'échelle int16.

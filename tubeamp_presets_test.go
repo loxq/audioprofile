@@ -55,8 +55,15 @@ func TestTubeAmpSettingsScaled(t *testing.T) {
 		t.Error("le nombre d'étages et Cabinet ne doivent pas changer")
 	}
 	two := base.Scaled(2)
-	if two.DriveDB != 12 || two.Bias != 0.2 || two.BassDB != 4 || two.MidDB != -2 || two.TrebleDB != 3 || two.OutputDB != -4 {
+	if two.DriveDB != 12 || two.Bias != 0.1 || two.BassDB != 4 || two.MidDB != -2 || two.TrebleDB != 3 || two.OutputDB != -4 {
 		t.Errorf("intensité 2 : %+v", two)
+	}
+	// l'asymétrie suit l'intensité jusqu'à 1 puis reste fixe
+	if got := base.Scaled(0.5).Bias; got != 0.05 {
+		t.Errorf("asymétrie à intensité 0,5 : %v, attendu 0,05", got)
+	}
+	if got := base.Scaled(MaxIntensity).Bias; got != 0.1 {
+		t.Errorf("asymétrie à intensité %v : %v, attendu 0,1 (plafonnée)", MaxIntensity, got)
 	}
 	// gain de sortie positif : plafonné à sa valeur d'intensité 1
 	pos := TubeAmpSettings{DriveDB: 6, OutputDB: 3}
@@ -155,6 +162,20 @@ func TestAmpPresetsSilenceAndChunks(t *testing.T) {
 		chunked, _ := io.ReadAll(TubeAmp(io.MultiReader(bytes.NewReader(mix[:7]), bytes.NewReader(mix[7:])), 44100, 2, s))
 		if !bytes.Equal(whole, chunked) {
 			t.Errorf("%v : la lecture fragmentée doit donner le même résultat", p)
+		}
+	}
+}
+
+// Régression : à intensité exagérée, le niveau ne s'effondre pas.
+func TestAmpPresetsLevelDoesNotCollapseAboveOne(t *testing.T) {
+	in := tone(1000, ampOf(-18), 44100, 44100)
+	for _, p := range TubeAmpPresets() {
+		for _, intensity := range []float64{1, 2, MaxIntensity} {
+			out := runAmp(t, in, 1, p.Settings().Scaled(intensity))
+			got := 20 * math.Log10(rms(out)/rms(in))
+			if got < -15 || got > 10 {
+				t.Errorf("%v intensité %.0f : niveau %+.1f dB, attendu entre -15 et +10", p, intensity, got)
+			}
 		}
 	}
 }

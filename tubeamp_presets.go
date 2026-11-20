@@ -25,9 +25,9 @@ var ampPresetNames = [numAmpPresets]string{AmpClean: "clean", AmpCrunch: "crunch
 // ampPresets donne les réglages de chaque préréglage à intensité 1. Ces valeurs
 // sont des points de départ, vérifiés par mesure et non à l'oreille.
 var ampPresets = [numAmpPresets]TubeAmpSettings{
-	AmpClean:  {DriveDB: 4, Stages: 2, Bias: 0.10, BassDB: 1, OutputDB: -3.5},
-	AmpCrunch: {DriveDB: 9, Stages: 2, Bias: 0.15, BassDB: 2, MidDB: -1, TrebleDB: 1, OutputDB: -2.5},
-	AmpLead:   {DriveDB: 14, Stages: 3, Bias: 0.20, BassDB: 1, MidDB: 2, TrebleDB: 1, OutputDB: -5},
+	AmpClean:  {DriveDB: 4, Stages: 2, Bias: 0.15, BassDB: 1, OutputDB: -3.5},
+	AmpCrunch: {DriveDB: 9, Stages: 2, Bias: 0.25, BassDB: 2, MidDB: -1, TrebleDB: 1, OutputDB: -2.5},
+	AmpLead:   {DriveDB: 14, Stages: 3, Bias: 0.35, BassDB: 1, MidDB: 2, TrebleDB: 1, OutputDB: -5},
 }
 
 // TubeAmpPresets renvoie tous les préréglages disponibles.
@@ -72,9 +72,11 @@ func (p TubeAmpPreset) Settings() TubeAmpSettings {
 // 1 = réglages inchangés, au-delà de 1 = exagéré. L'intensité est ramenée dans
 // [0, MaxIntensity] ; NaN vaut 0.
 //
-// Le drive, l'asymétrie et le correcteur de timbre sont multipliés par
-// l'intensité. Le gain de sortie négatif l'est aussi ; un gain de sortie positif
-// ne croît pas au-delà de l'intensité 1 (il dépasserait la marge). Le nombre
+// Le drive et le correcteur de timbre sont multipliés par l'intensité. Le gain
+// de sortie négatif l'est aussi. L'asymétrie et un gain de sortie positif ne
+// croissent pas au-delà de l'intensité 1 : l'asymétrie, à fort drive et sur
+// plusieurs étages, repousserait le point de fonctionnement dans la zone saturée
+// et le niveau s'effondrerait ; un gain positif dépasserait la marge. Le nombre
 // d'étages et Cabinet ne changent pas.
 func (s TubeAmpSettings) Scaled(intensity float64) TubeAmpSettings {
 	if math.IsNaN(intensity) || intensity < 0 {
@@ -82,7 +84,7 @@ func (s TubeAmpSettings) Scaled(intensity float64) TubeAmpSettings {
 	}
 	intensity = math.Min(MaxIntensity, intensity)
 	s.DriveDB *= intensity
-	s.Bias *= intensity
+	s.Bias *= math.Min(intensity, 1)
 	s.BassDB *= intensity
 	s.MidDB *= intensity
 	s.TrebleDB *= intensity

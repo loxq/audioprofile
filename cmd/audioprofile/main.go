@@ -35,7 +35,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		profile   = fs.String("profile", "", "profil d'égaliseur à appliquer (voir -list)")
 		amp       = fs.String("amp", "", "préréglage d'ampli à tubes à appliquer à la place d'un profil (voir -list-amps)")
 		cabinet   = fs.Bool("cabinet", false, "avec -amp : ajoute la simulation de baffle (son étouffé sur un morceau complet)")
-		intensity = fs.Float64("intensity", 1, fmt.Sprintf("intensité du profil : 0 = aucun effet, 1 = complet, jusqu'à %g pour l'exagérer", audioprofile.MaxIntensity))
+		intensity = fs.Float64("intensity", 1, fmt.Sprintf("intensité du profil ou de l'ampli : 0 = aucun effet, 1 = complet, jusqu'à %g pour l'exagérer", audioprofile.MaxIntensity))
 		rate      = fs.Int("rate", 44100, "fréquence d'échantillonnage en Hz (doit correspondre à celle de ffmpeg)")
 		channels  = fs.Int("channels", 2, "nombre de canaux (doit correspondre à celui de ffmpeg)")
 		list      = fs.Bool("list", false, "affiche les profils disponibles et quitte")

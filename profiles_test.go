@@ -200,3 +200,19 @@ func TestProfileIntensityAboveOne(t *testing.T) {
 		t.Error("l'intensité doit être plafonnée à MaxIntensity")
 	}
 }
+
+// Régression : à intensité exagérée, le niveau ne s'effondre pas (l'asymétrie
+// mise à l'échelle avec le drive rendait Jazz et Tube quasi muets à 3).
+func TestProfilesLevelDoesNotCollapseAboveOne(t *testing.T) {
+	const fs = 44100
+	in := tone(1000, ampOf(-18), fs, fs)
+	for _, p := range Profiles() {
+		for _, intensity := range []float64{1, 2, MaxIntensity} {
+			out, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), fs, 1, p, intensity))
+			got := 20 * math.Log10(rms(out)/rms(in))
+			if got < -15 || got > 10 {
+				t.Errorf("%v intensité %.0f : niveau %+.1f dB, attendu entre -15 et +10", p, intensity, got)
+			}
+		}
+	}
+}

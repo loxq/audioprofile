@@ -9,7 +9,7 @@ import (
 type TubeAmpSettings struct {
 	DriveDB float64 // gain total poussé dans les étages, réparti entre eux (0 = pas de saturation)
 	Stages  int     // étages à tube en cascade, de 1 à 4 ; <= 0 → 2
-	Bias    float64 // asymétrie des tubes, de 0 (symétrique) à 0,5 ; ajoute des harmoniques paires
+	Bias    float64 // asymétrie β des tubes, de 0 (symétrique) à 1 ; ajoute des harmoniques paires, indépendante du drive
 
 	// Correcteur de timbre, appliqué après les étages (en dB, + = renforcé).
 	BassDB   float64 // basses : shelf à 100 Hz

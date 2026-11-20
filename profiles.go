@@ -105,8 +105,8 @@ var profileSaturation = [numProfiles]saturation{
 	Rock:       {driveDB: 6, outputDB: -1},
 	HipHop:     {driveDB: 3, outputDB: 0},
 	Electronic: {driveDB: 3, outputDB: 0},
-	Jazz:       {driveDB: 3, bias: 0.2, outputDB: 2},
-	Tube:       {driveDB: 6, bias: 0.2, outputDB: 0},
+	Jazz:       {driveDB: 3, bias: 0.3, outputDB: 2},
+	Tube:       {driveDB: 6, bias: 0.4, outputDB: 0},
 }
 
 // Profiles renvoie tous les profils disponibles.
@@ -182,12 +182,14 @@ func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity 
 		sc := scaleCompression(*c, intensity)
 		comp = &sc
 	}
+	// L'asymétrie ne croît pas au-delà de l'intensité 1 : à fort drive, elle repousserait
+	// le point de fonctionnement dans la zone saturée et les signaux faibles s'effondreraient.
 	out := sat.outputDB * intensity
 	if sat.outputDB > 0 { // un gain positif ne croît pas au-delà de l'intensité 1 : il dépasserait la marge
 		out = sat.outputDB * math.Min(intensity, 1)
 	}
 	return newEqualizerReader(src, sampleRate, channels, bands, comp,
-		&saturation{driveDB: sat.driveDB * intensity, bias: sat.bias * intensity, outputDB: out, stages: sat.stages})
+		&saturation{driveDB: sat.driveDB * intensity, bias: sat.bias * math.Min(intensity, 1), outputDB: out, stages: sat.stages})
 }
 
 // peakResponseDB renvoie le gain maximal (en dB) de la chaîne de filtres,
