@@ -204,13 +204,17 @@ func TestSoftCeiling(t *testing.T) {
 	prev := -1.0
 	for x := 0.0; x <= 3; x += 0.01 {
 		y := softCeiling(x)
-		if y < prev || y >= 1.0000001 {
-			t.Fatalf("softCeiling(%.2f) = %v : monotone et < 1 attendus", x, y)
+		if y < prev || y > ceilingTop {
+			t.Fatalf("softCeiling(%.2f) = %v : monotone et ≤ %.5f attendus", x, y, ceilingTop)
 		}
 		prev = y
 	}
 	if softCeiling(-1.5) != -softCeiling(1.5) {
 		t.Error("softCeiling doit être impaire")
+	}
+	// genou réglable : identité en dessous, jamais la pleine échelle au-dessus
+	if softCeilingAt(0.7, 0.8) != 0.7 || softCeilingAt(1.6, 0.8) > ceilingTop || softCeilingAt(1.6, 0.8) <= 0.8 {
+		t.Errorf("softCeilingAt mal calibré : %v, %v", softCeilingAt(0.7, 0.8), softCeilingAt(1.6, 0.8))
 	}
 }
 
@@ -311,6 +315,16 @@ func TestOnlyJazzAddsEvenHarmonics(t *testing.T) {
 		}
 		if p != Jazz && even > 0.005 {
 			t.Errorf("%v ne doit pas produire d'harmonique paire (%.4f)", p, even)
+		}
+	}
+}
+
+func TestSoftCeilingNeverRoundsToFullScale(t *testing.T) {
+	for _, x := range []float64{0.95, 1, 1.5, 3, 10, 1000} {
+		for _, k := range []float64{ceilingKnee, postCeilingKnee} {
+			if v := math.Round(32768 * softCeilingAt(x, k)); v >= 32767 {
+				t.Errorf("x=%v knee=%v : arrondi à %v", x, k, v)
+			}
 		}
 	}
 }

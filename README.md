@@ -7,6 +7,7 @@ Ce que le paquet `audioprofile` propose :
 - `ApplyProfile` : applique un **profil prédéfini** (Rock, Pop, Classical, Jazz, HipHop, Electronic, Acoustic, Vocal) avec une intensité réglable ;
 - `Equalizer` : **égaliseur paramétrique** à bandes libres (type, fréquence, gain en dB, Q) ;
 - `Compressor` : **compresseur de dynamique** (seuil, ratio, attaque, relâchement, genou, compensation) ;
+- `TubeAmp` : **ampli à tubes simulé** (étages de saturation asymétriques en cascade, correcteur de timbre, baffle optionnel) ;
 - `BassBoost`, `MidBoost`, `TrebleBoost` : **préréglages à une bande** (basses, médiums, aigus) réglés par une simple intensité ;
 - `audioprofile` (commande) : applique un profil sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`.
 
@@ -109,6 +110,7 @@ La saturation ([saturation.go](saturation.go)) applique, sur le signal normalis�
 
 - **Asymétrie** : à `b = 0` (Rock, HipHop, Electronic), la courbe est symétrique et ne produit que des **harmoniques impaires** (3e, 5e…), plutôt dures. Avec `b > 0` (Jazz), elle est asymétrique comme celle d'un tube et ajoute des **harmoniques paires** (2e, 4e…), perçues comme plus chaudes : sur Jazz, 2e harmonique de 1,8 % à −18 dBFS et 8 % à −3 dBFS (200 Hz), contre 0 pour les autres profils. Un filtre passe-haut (7 Hz) retire la composante continue qu'introduit l'asymétrie, et le silence reste un silence exact.
 - **Suréchantillonnage ×4** : la non-linéarité s'exécute à 4 fois la fréquence d'échantillonnage, entre deux filtres passe-bas d'ordre 8 (coupure 0,43 × fs). Les harmoniques qui dépasseraient Nyquist sont atténuées avant de se replier dans le spectre audible : sur un sinus de 15 kHz poussé de 6 dB, le repliement à 900 Hz tombe de 6,4 % à 0,35 % (−25 dB). Ces filtres arrondissent légèrement les aigus extrêmes des profils saturés (mesuré à 44,1 kHz : −0,2 dB à 15 kHz, −3 dB à 18 kHz, −10 dB à 20 kHz).
+- **Plusieurs étages** : l'étage peut être mis en cascade (voir [Ampli à tubes](#ampli-à-tubes)), avec inversion de phase et couplage entre étages.
 - **Plafond doux** : une onde saturée, une fois limitée en bande, peut dépasser la pleine échelle (la fondamentale d'une onde carrée vaut 1,27 fois son sommet). Un plafond doux arrondit ces pics au lieu de les laisser écrêter net : la saturation ne produit jamais la pleine échelle.
 - **Un état par canal** : les filtres et le filtre anti-continu sont propres à chaque canal ; un canal silencieux reste silencieux (pas de diaphonie).
 - **Le grain s'entend surtout dans les basses** : le gain automatique compense le drive là où l'égalisation est sous son pic.
@@ -168,6 +170,41 @@ io.Copy(out, audioprofile.Compressor(in, 44100, 2, audioprofile.CompressorSettin
 - Le niveau est détecté sur la **crête du canal le plus fort** de chaque trame, et le **même gain** est appliqué à tous les canaux (détection liée) : l'image stéréo est conservée.
 - Le gain est calculé en dB (genou quadratique), puis lissé : attaque quand la réduction augmente, relâchement quand elle diminue.
 - Sans effet (flux renvoyé tel quel) si `Ratio <= 1` et `MakeupDB = 0`.
+
+### Ampli à tubes
+
+```go
+func TubeAmp(src io.Reader, sampleRate, channels int, s TubeAmpSettings) io.Reader
+
+type TubeAmpSettings struct {
+	DriveDB  float64 // gain total poussé dans les étages, réparti entre eux (0 = pas de saturation)
+	Stages   int     // étages à tube en cascade, de 1 à 4 ; <= 0 → 2
+	Bias     float64 // asymétrie des tubes, de 0 à 0,5 ; ajoute des harmoniques paires
+
+	BassDB   float64 // correcteur de timbre : shelf à 100 Hz
+	MidDB    float64 //                       cloche à 650 Hz (Q = 0,8)
+	TrebleDB float64 //                       shelf à 4 kHz
+
+	Cabinet  bool    // simulation de baffle et de haut-parleur
+	OutputDB float64 // gain de sortie final
+}
+```
+
+```go
+io.Copy(out, audioprofile.TubeAmp(in, 44100, 2, audioprofile.TubeAmpSettings{
+	DriveDB: 9, Stages: 2, Bias: 0.15, BassDB: 2, TrebleDB: -1,
+}))
+```
+
+La chaîne est : étages de saturation → correcteur de timbre → baffle (si demandé) → plafond doux.
+
+- **Étages en cascade** : chaque étage est la [saturation de type tube](#saturation-de-type-tube) suréchantillonnée. Le drive total est réparti à parts égales entre les étages, la phase est inversée d'un étage à l'autre (comme dans un vrai préampli), puis rétablie en sortie : la polarité d'origine est conservée quel que soit le nombre d'étages. Entre deux étages, un filtre de couplage à 30 Hz retire la composante continue que l'asymétrie fait apparaître. Tout est calculé dans le domaine suréchantillonné ×4, avec un seul jeu de filtres.
+- **Timbre** : trois bandes appliquées *après* les étages, comme le correcteur d'un ampli.
+- **Baffle** : passe-haut à 80 Hz, résonance de +3 dB à 110 Hz, présence de +3 dB à 2,8 kHz, puis passe-bas d'ordre 4 à 5 kHz. **Sur un morceau complet, il donne un son volontairement étouffé, « de radio »** (10 kHz à −28 dB mesuré sur `sample01.mp3`) : à réserver à un usage créatif, ou à une guitare seule. Les filtres du baffle dont la fréquence dépasse Nyquist sont ignorés.
+- **Gain automatique** : les filtres posés après les étages (timbre, baffle) sont suivis d'un gain qui ramène leur réponse maximale à 0 dB ; un renfort de timbre baisse donc le reste d'autant. Aucune autre compensation de niveau n'est faite : la saturation relève les signaux faibles (+3 dB de RMS sur `sample01.mp3` avec les réglages ci-dessus), ajustez `OutputDB`.
+- **Plafond doux** : un filtre à 0 dB au maximum peut déphaser les harmoniques d'une onde saturée de façon à additionner leurs pics (jusqu'à 1,36 fois la pleine échelle mesuré avec le baffle, +8 dB de basses et 18 dB de drive). Un plafond doux (genou à 0,8) arrondit ces pics au lieu de les écrêter net ; la sortie ne touche jamais ±32767.
+- Sans effet (flux renvoyé tel quel) si `sampleRate <= 0`, ou si tous les réglages sont nuls et `Cabinet` est faux. `Bias` seul, sans drive, n'a pas d'effet.
+- Mesuré sur `sample01.mp3` (réglages ci-dessus) : composante continue de 0,14 % de l'original réduite à 0,001 %, aucun échantillon à pleine échelle.
 
 ### Préréglages à une bande
 
@@ -238,7 +275,8 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `bassboost_test.go`, `midboost_test.go`, `trebleboost_test.go` | gains et atténuations des préréglages, signal intact à intensité nulle ou au-delà de Nyquist |
 | `equalizer_test.go` | courbe multibande (gains à moins de 0,7 dB), effet de Q, bandes ignorées, limitation à ±24 dB, lecture fragmentée identique à une lecture en un bloc |
 | `dynamics_test.go` | courbe statique du compresseur, genou doux, attaque / relâchement progressifs, détection liée stéréo, coude franc sans NaN, compensation seule, mise à l'échelle par l'intensité |
-| `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire, asymétrique avec biais), harmoniques impaires seulement à biais nul et paires avec biais, composante continue retirée, silence exact, réduction du repliement (≥ 20 dB), plafond doux, états par canal sans diaphonie, seul Jazz produit des harmoniques paires, croissance avec l'intensité, niveau de Rock |
+| `saturation_test.go` | forme de la saturation (pleine échelle conservée, monotone, impaire, asymétrique avec biais), harmoniques impaires seulement à biais nul et paires avec biais, composante continue retirée, silence exact, réduction du repliement (≥ 20 dB), plafond doux (jamais ±32767 après arrondi), états par canal sans diaphonie, seul Jazz produit des harmoniques paires, croissance avec l'intensité, niveau de Rock |
+| `tubeamp_test.go` | identité sans réglage, polarité conservée de 1 à 4 étages, harmoniques paires sans composante continue, correcteur de timbre (±6 dB), baffle (aigus, très graves, présence, résonance), pic des filtres finaux à 0 dB, basse fréquence d'échantillonnage, gain de sortie, silence exact, états par canal et lecture fragmentée, aucun écrêtage même à fond |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
 | `cmd/audioprofile/main_test.go` | liste, traitement, identité de `flat`, mono et fréquence, erreurs, entrée vide |
 

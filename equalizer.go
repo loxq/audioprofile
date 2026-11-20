@@ -11,6 +11,8 @@ const (
 	defaultQ   = math.Sqrt2 / 2 // Q par défaut (1/√2) : réponse la plus plate sans surtension
 	minQ       = 0.1
 	maxBandDB  = 24.0 // |gain| maximal accepté par bande
+
+	postCeilingKnee = 0.8 // genou du plafond doux après les filtres finaux (marge plus large : ils déphasent l'onde saturée)
 )
 
 // BandType est le type de filtre d'une bande d'égalisation.
@@ -45,36 +47,54 @@ func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader 
 	return newEqualizerReader(src, sampleRate, channels, bands, nil, nil)
 }
 
+// chain décrit la chaîne de traitement d'un lecteur, dans l'ordre :
+// égalisation → compresseur → saturation (+ gain de sortie) → filtres finaux.
+type chain struct {
+	bands []Band              // égalisation
+	comp  *CompressorSettings // compresseur (nil = aucun)
+	sat   *saturation         // saturation (nil = aucune)
+	post  []coeffs            // filtres appliqués après la saturation (timbre, baffle…)
+}
+
 // newEqualizerReader est Equalizer avec, en option, un compresseur puis une
 // saturation appliqués dans cet ordre après les filtres.
 func newEqualizerReader(src io.Reader, sampleRate, channels int, bands []Band, comp *CompressorSettings, sat *saturation) io.Reader {
+	return newChainReader(src, sampleRate, channels, chain{bands: bands, comp: comp, sat: sat})
+}
+
+// newChainReader construit un lecteur qui applique la chaîne c.
+func newChainReader(src io.Reader, sampleRate, channels int, c chain) io.Reader {
 	if channels < 1 {
 		channels = 1
 	}
-	var coefs []coeffs
-	if sampleRate > 0 {
-		coefs = designBands(float64(sampleRate), bands)
-	}
-
+	var coefs, post []coeffs
 	var cmp *compressor
-	if sampleRate > 0 {
-		cmp = newCompressor(float64(sampleRate), comp)
-	}
 	var sats []*saturator
-	if sat != nil && sampleRate > 0 {
-		sats = newSaturators(float64(sampleRate), channels, *sat)
+	if sampleRate > 0 {
+		fs := float64(sampleRate)
+		coefs = designBands(fs, c.bands)
+		cmp = newCompressor(fs, c.comp)
+		if c.sat != nil {
+			sats = newSaturators(fs, channels, *c.sat)
+		}
+		post = c.post
 	}
 	r := &reader{
 		src: src, channels: channels, sat: sats, comp: cmp,
-		passthru: len(coefs) == 0 && sats == nil && cmp == nil,
+		passthru: len(coefs) == 0 && sats == nil && cmp == nil && len(post) == 0,
 		frame:    make([]float64, channels),
 	}
 	if !r.passthru {
 		r.filters = make([][]biquad, channels)
+		r.post = make([][]biquad, channels)
 		for ch := range r.filters {
 			r.filters[ch] = make([]biquad, len(coefs))
-			for i, c := range coefs {
-				r.filters[ch][i] = biquad{coef: c}
+			for i, co := range coefs {
+				r.filters[ch][i] = biquad{coef: co}
+			}
+			r.post[ch] = make([]biquad, len(post))
+			for i, co := range post {
+				r.post[ch][i] = biquad{coef: co}
 			}
 		}
 	}
@@ -129,6 +149,7 @@ type reader struct {
 	filters  [][]biquad   // filters[canal][bande]
 	comp     *compressor  // compresseur, après les filtres (peut être nil)
 	sat      []*saturator // saturation + gain de sortie, un par canal, après le compresseur (peut être nil)
+	post     [][]biquad   // post[canal][filtre] : filtres appliqués après la saturation
 	frame    []float64    // tampon de travail : une trame (un échantillon par canal)
 	passthru bool
 
@@ -187,6 +208,14 @@ func (r *reader) process(b []byte) []byte {
 			y := r.frame[ch]
 			if r.sat != nil {
 				y = r.sat[ch].apply(y)
+			}
+			if len(r.post[ch]) > 0 {
+				for k := range r.post[ch] {
+					y = r.post[ch][k].process(y)
+				}
+				// les filtres finaux déphasent l'onde saturée : ses pics peuvent
+				// dépasser la pleine échelle même avec un gain de 0 dB au maximum
+				y = 32768 * softCeilingAt(y/32768, postCeilingKnee)
 			}
 			// écrêtage pour éviter le débordement d'entier
 			y = math.Max(-32768, math.Min(32767, math.Round(y)))
@@ -283,6 +312,22 @@ func lowPass(fs, f0, q float64) coeffs {
 		b0: (1 - cosw) / 2 / a0,
 		b1: (1 - cosw) / a0,
 		b2: (1 - cosw) / 2 / a0,
+		a1: -2 * cosw / a0,
+		a2: (1 - alpha) / a0,
+	}
+}
+
+// highPass : filtre passe-haut du second ordre (RBJ Audio EQ Cookbook).
+func highPass(fs, f0, q float64) coeffs {
+	w0 := 2 * math.Pi * f0 / fs
+	cosw, sinw := math.Cos(w0), math.Sin(w0)
+	alpha := sinw / (2 * q)
+
+	a0 := 1 + alpha
+	return coeffs{
+		b0: (1 + cosw) / 2 / a0,
+		b1: -(1 + cosw) / a0,
+		b2: (1 + cosw) / 2 / a0,
 		a1: -2 * cosw / a0,
 		a2: (1 - alpha) / a0,
 	}

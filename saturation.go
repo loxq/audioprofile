@@ -10,18 +10,28 @@ const (
 	oversample   = 4    // facteur de suréchantillonnage de l'étage non linéaire
 	oversampleHz = 0.43 // coupure des filtres de suréchantillonnage, en fraction de la fréquence d'échantillonnage
 	dcCutoffHz   = 7.0  // coupure du filtre anti-continu (quand l'étage est asymétrique)
-	ceilingKnee  = 0.9  // au-delà (en valeur normalisée), le plafond doux arrondit les pics
+	maxStages    = 4    // nombre maximal d'étages en cascade
+	couplingHz   = 30.0 // coupure du filtre de couplage entre deux étages
+	ceilingKnee  = 0.9  // au-delà (en valeur normalisée), le plafond doux de la saturation arrondit les pics
 )
 
-// softCeiling arrondit les pics au-delà de ceilingKnee sans jamais atteindre la
-// pleine échelle (asymptote à 1) : continue, de pente 1 au genou.
-func softCeiling(x float64) float64 {
+// ceilingTop est l'asymptote des plafonds doux : deux pas de quantification sous
+// la pleine échelle, pour que la sortie arrondie en int16 ne touche jamais ±32767.
+const ceilingTop = 1 - 2.0/32768
+
+// softCeilingAt arrondit les pics au-delà de knee et les fait tendre vers
+// ceilingTop sans l'atteindre : continue, de pente 1 au genou.
+func softCeilingAt(x, knee float64) float64 {
 	a := math.Abs(x)
-	if a <= ceilingKnee {
+	if a <= knee {
 		return x
 	}
-	return math.Copysign(ceilingKnee+(1-ceilingKnee)*math.Tanh((a-ceilingKnee)/(1-ceilingKnee)), x)
+	span := ceilingTop - knee
+	return math.Copysign(knee+span*math.Tanh((a-knee)/span), x)
 }
+
+// softCeiling est softCeilingAt au genou ceilingKnee.
+func softCeiling(x float64) float64 { return softCeilingAt(x, ceilingKnee) }
 
 // butterworth8Q donne les facteurs Q des 4 sections d'un filtre de Butterworth d'ordre 8
 // (Q = 1 / (2·sin((2k−1)π/16))).
@@ -32,6 +42,16 @@ type saturation struct {
 	driveDB  float64 // gain poussé dans la saturation (plus c'est haut, plus le grain est marqué)
 	bias     float64 // asymétrie : 0 = symétrique (harmoniques impaires), > 0 ajoute des harmoniques paires
 	outputDB float64 // gain de sortie final, pour régler le niveau après saturation
+	stages   int     // étages en cascade (0 ou 1 = un seul) ; le drive est réparti entre eux
+}
+
+// highPass1 : filtre passe-haut du premier ordre (condensateur de couplage).
+type highPass1 struct{ r, x, y float64 }
+
+func (h *highPass1) process(x float64) float64 {
+	y := x - h.x + h.r*h.y
+	h.x, h.y = x, y
+	return y
 }
 
 // saturator applique une saturation douce de type tube, puis un gain de sortie.
@@ -68,9 +88,10 @@ type saturator struct {
 	out     float64 // gain de sortie linéaire
 
 	up, down [4]biquad // filtres de suréchantillonnage / décimation
+	stages   int
+	coupling [maxStages - 1]highPass1 // couplage entre étages, à la fréquence suréchantillonnée
 	dcBlock  bool
-	dcR      float64
-	dcX, dcY float64
+	dc       highPass1 // anti-continu en sortie, à la fréquence d'origine
 }
 
 // newSaturators renvoie un saturateur par canal, ou nil si l'étage est sans effet
@@ -85,8 +106,12 @@ func newSaturators(fs float64, channels int, s saturation) []*saturator {
 		return nil
 	}
 	proto := saturator{out: math.Pow(10, outputDB/20)}
+	proto.stages = 1
 	if driveDB > 0 {
-		proto.drive = math.Pow(10, driveDB/20)
+		if s.stages > 1 {
+			proto.stages = min(s.stages, maxStages)
+		}
+		proto.drive = math.Pow(10, driveDB/float64(proto.stages)/20) // drive réparti entre les étages
 		proto.bias = math.Max(-maxBias, math.Min(maxBias, s.bias))
 		proto.biasOff = math.Tanh(proto.drive * proto.bias)
 		raw := func(x float64) float64 { return math.Tanh(proto.drive*(x+proto.bias)) - proto.biasOff }
@@ -98,9 +123,12 @@ func newSaturators(fs float64, channels int, s saturation) []*saturator {
 			proto.up[i] = biquad{coef: c}
 			proto.down[i] = biquad{coef: c}
 		}
+		for i := range proto.coupling {
+			proto.coupling[i].r = math.Exp(-2 * math.Pi * couplingHz / fsUp)
+		}
 		if proto.bias != 0 {
 			proto.dcBlock = true
-			proto.dcR = math.Exp(-2 * math.Pi * dcCutoffHz / fs)
+			proto.dc.r = math.Exp(-2 * math.Pi * dcCutoffHz / fs)
 		}
 	}
 	sats := make([]*saturator, channels)
@@ -129,7 +157,15 @@ func (s *saturator) apply(y float64) float64 {
 			for i := range s.up {
 				u = s.up[i].process(u)
 			}
-			u = s.shape(u)
+			for st := 0; st < s.stages; st++ {
+				u = -s.shape(u) // un étage à tube inverse la phase
+				if st < s.stages-1 {
+					u = s.coupling[st].process(u) // couplage : retire la continue entre étages
+				}
+			}
+			if s.stages%2 == 1 {
+				u = -u // nombre impair d'étages : on rétablit la polarité d'origine
+			}
 			for i := range s.down {
 				u = s.down[i].process(u)
 			}
@@ -137,9 +173,7 @@ func (s *saturator) apply(y float64) float64 {
 		}
 		x = o
 		if s.dcBlock {
-			out := x - s.dcX + s.dcR*s.dcY
-			s.dcX, s.dcY = x, out
-			x = out
+			x = s.dc.process(x)
 		}
 	}
 	x *= s.out
