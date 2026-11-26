@@ -165,3 +165,43 @@ func TestFXWithABLoudnessAndTarget(t *testing.T) {
 		t.Errorf("%.2f LUFS, %q", l.IntegratedLUFS, errOut)
 	}
 }
+
+// -fx transient : sans réglage, le flux est identique ; avec attack, le début d'un son est renforcé.
+func TestFXTransient(t *testing.T) {
+	// un son qui part d'un coup puis s'éteint (7 000 trames de silence, puis un sinus qui décroît)
+	var in []byte
+	for i := 0; i < 44100; i++ {
+		v := 0.0
+		if i >= 7000 {
+			tt := float64(i-7000) / 44100
+			v = 6000 * math.Exp(-tt*1000/90) * math.Sin(2*math.Pi*180*tt)
+		}
+		in = append(in, byte(uint16(int16(v))), byte(uint16(int16(v))>>8), byte(uint16(int16(v))), byte(uint16(int16(v))>>8))
+	}
+	same, _, err := runCLI(t, in, "-fx", "transient")
+	if err != nil || same != string(in) {
+		t.Fatalf("sans réglage, le flux doit rester identique (err=%v)", err)
+	}
+	out, _, err := runCLI(t, in, "-fx", "transient:attack=1")
+	if err != nil || len(out) != len(in) {
+		t.Fatalf("err=%v longueur %d/%d", err, len(out), len(in))
+	}
+	a, o := samplesOf(string(in)), samplesOf(out)
+	var ei, eo float64
+	for i := 2 * 7000; i < 2*(7000+441); i += 2 { // les 10 premières ms de l'attaque
+		ei += float64(a[i]) * float64(a[i])
+		eo += float64(o[i]) * float64(o[i])
+	}
+	if g := 10 * math.Log10(eo/ei); g < 3 {
+		t.Errorf("attaque : %+.1f dB sur les 10 premières ms, attendu > +3", g)
+	}
+	for _, args := range [][]string{{"-fx", "transient:attack=2"}, {"-fx", "transient:sustain=-1.5"}} {
+		if _, _, err := runCLI(t, in, args...); err == nil || !strings.Contains(err.Error(), "doit être dans [-1, 1]") {
+			t.Errorf("%v : erreur attendue, reçu %v", args, err)
+		}
+	}
+	list, _, _ := runCLI(t, nil, "-list-fx")
+	if !strings.Contains(list, "transient") || !strings.Contains(list, "attack") || !strings.Contains(list, "sustain") {
+		t.Errorf("transient absent de -list-fx : %q", list)
+	}
+}

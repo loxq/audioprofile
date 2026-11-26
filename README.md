@@ -9,6 +9,7 @@ Ce que le paquet `audioprofile` propose :
 - `Compressor` : **compresseur de dynamique** (seuil, ratio, attaque, relâchement, genou, compensation) ;
 - `MultibandCompressor` : **compresseur multibande** (séparations de Linkwitz-Riley, un compresseur par bande) ;
 - `Limiter` : **limiteur de crête à anticipation** (plafond garanti, sortie recalée sur l'entrée) ;
+- `TransientShaper` : **renforçateur de transitoires** (attaque et queue des sons, sans seuil) ;
 - `StereoWidth` : **élargisseur stéréo** mid/side qui garde les basses au centre et la compatibilité mono ;
 - `TubeAmp` : **ampli à tubes simulé** (étages de saturation asymétriques en cascade, correcteur de timbre, baffle optionnel), avec les préréglages `AmpClean`, `AmpCrunch` et `AmpLead` ;
 - `BassBoost`, `MidBoost`, `TrebleBoost` : **préréglages à une bande** (basses, médiums, aigus) réglés par une simple intensité ;
@@ -435,6 +436,38 @@ Comparer un son traité à l'original quand il est plus fort est trompeur : le p
 
 La commande les assemble avec l'option `-ab` ([voir plus bas](#comparer-à-loreille--ab)).
 
+### Renforçateur de transitoires
+
+```go
+type TransientSettings struct {
+	Attack  float64 // de -1 (attaque aplatie) à +1 (attaque marquée)
+	Sustain float64 // de -1 (queue raccourcie) à +1 (queue allongée)
+}
+
+func TransientShaper(src io.Reader, sampleRate, channels int, s TransientSettings) io.Reader
+```
+
+Accentue ou adoucit **l'attaque** des sons (l'impact d'une grosse caisse, d'une caisse claire, d'un médiator) et **leur queue** (la résonance qui suit), **sans seuil** : l'effet suit la forme des sons, pas leur niveau. C'est le seul effet de la bibliothèque qui augmente (ou diminue) réellement la dynamique à l'échelle de la note, là où le compresseur et le limiteur ne savent que la réduire.
+
+- **Principe** : deux enveloppes du niveau crête sont comparées, une rapide (monte en 1 ms, retombe en 50 ms) et une lente (monte en 25 ms, retombe en 350 ms). Au début d'un son, la rapide devance la lente : c'est l'attaque. Dans la queue d'un son qui s'éteint, la lente reste au-dessus : c'est la tenue. Le gain en dB est proportionnel à l'écart : `Attack = +1` double, en dB, l'avance de l'attaque sur le corps du son ; `Attack = −1` la supprime ; `Sustain` fait de même avec la queue (il agit surtout sur la fin de la résonance, de 100 à 300 ms après l'attaque pour un son qui décroît en 90 ms : il change la pente de la décroissance).
+- **Indépendant du niveau** : le même coup de caisse claire est traité de la même façon à −40, −30 et −20 dBFS (gain de +10,7, +11,2 et +11,4 dB sur l'attaque à `Attack = 1`).
+- **Un son stable n'est pas touché** : un sinus de 40 Hz à 8 kHz sort à ±0,2 dB avec moins de −45 dB de distorsion, même aux réglages extrêmes. Sous 2 dB d'écart entre les enveloppes, aucun gain n'est appliqué (« zone morte ») : elle absorbe l'ondulation de l'enveloppe des très basses fréquences, qui sinon se transformerait en modulation.
+- Gain limité à ±12 dB et lissé sur 0,5 ms. **Rien n'est touché sous −70 dBFS** (enveloppe lente) : pas de pompage du bruit de fond, et le silence reste exactement du silence.
+- **Détection liée** (canal le plus fort, même gain pour tous) : l'image stéréo ne bouge pas.
+- **Pas d'anticipation** : le gain ne peut pas précéder le tout premier millième de seconde d'un son. Aplatir une attaque (`Attack < 0`) garde donc les toutes premières périodes presque intactes.
+- Renforcer l'attaque fait grimper les pics, sans compensation : un **plafond doux** (genou à 0,8) arrondit ceux qui dépasseraient la pleine échelle. **Sur un master très fort, dont les pics sont déjà à 0 dBFS, il reste presque rien à gagner sur l'attaque.**
+- Sans effet (flux identique) si `Attack` et `Sustain` sont nuls ou NaN, ou si `sampleRate <= 0`. Les valeurs sont ramenées dans [−1, 1].
+
+**Mesuré sur les trois morceaux de `testdata/`** (`-fx transient:attack=0.7 -loudness`, rapport crête / sonie intégrée, appelé PLR, avant → après) :
+
+| Morceau (crête d'origine) | `attack=0.7` | `attack=-0.7` | `sustain=0.7` | `sustain=-0.7` |
+|---------------------------|--------------|---------------|---------------|----------------|
+| calme (−2,8 dBFS) | PLR 16,4 → 17,8 (+1,4) | 16,4 → 14,6 (−1,8) | −0,1 | 0,0 |
+| moyen (−0,2 dBFS) | 13,1 → 12,8 (−0,3) | 13,1 → 12,6 (−0,5) | −0,3 | −0,3 |
+| très fort (0,0 dBFS) | 7,7 → 7,5 (−0,2) | 7,7 → 7,5 (−0,2) | −0,1 | −0,3 |
+
+L'effet n'est net que sur le morceau calme : sur les deux autres, dont les crêtes sont déjà au plafond, la crête ne peut plus monter et le gain d'attaque est absorbé par le plafond doux (la crête reste à −0,1 / 0,0 dBFS). La plage de sonie (LRA), qui mesure des fenêtres de 3 s, ne bouge presque pas (de −0,9 à +0,6 LU) : ce n'est pas la bonne mesure pour une dynamique à l'échelle de la note, d'où le PLR et le facteur de crête (testé sur une boucle de batterie synthétique : 14,3 dB → 20,3 dB à `Attack = 0,8` et 13,4 dB à `−0,8`).
+
 ### Élargisseur stéréo
 
 ```go
@@ -537,6 +570,7 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 
 | Effet | Paramètres | Rôle |
 |-------|------------|------|
+| `transient` | `attack`, `sustain` (de −1 à 1, défaut 0) | renforçateur de transitoires |
 | `hpf` | `freq` (Hz, obligatoire), `order` (1 à 8, défaut 2) | filtre passe-haut de Butterworth |
 | `lpf` | `freq` (Hz, obligatoire), `order` (1 à 8, défaut 2) | filtre passe-bas de Butterworth |
 
@@ -645,12 +679,13 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `multiband_test.go` | somme des bandes plate à ±0,1 dB (4 bandes, de 20 Hz à 18 kHz, séparations comprises — un test de mutation sans la compensation passe-tout le fait échouer), bandes indépendantes (aigus intacts quand seules les basses sont compressées, contre −20 dB en large bande), compensation par bande, réglages invalides = identité, détection liée et canal silencieux exactement silencieux, longueur conservée, lecture fragmentée identique, mise à l'échelle par l'intensité |
 | `profiles_radio_test.go` | les 7 profils radio existent, noms et `ParseProfile`, constantes existantes inchangées, niveau à −18 dBFS dans la fourchette mesurée de chacun, aucune crête au-dessus du plafond de −1 dBFS (7 profils × 4 intensités × 7 fréquences, mono et stéréo, signal à −0,1 dBFS), identité à intensité 0 / négative / NaN, longueur conservée, profil sans égalisation (`radio-natural`) qui agit quand même, élargissement du côté/milieu à la largeur du profil à 3 kHz et pas à 60 Hz, image de `radio-talk` inchangée, dynamique non écrasée (écart faible/fort conservé), basse fréquence d'échantillonnage |
 | `loudness_test.go` | coefficients de la pondération K à 48 kHz égaux à la table de l'UIT-R BS.1770-4 (10⁻⁹), gain de +0,69 dB à 1 kHz (44,1 / 48 / 96 kHz), étalonnage (X dBFS stéréo → X LUFS, mono −3,01 dB, à 44,1 / 48 / 96 kHz), accord avec ffmpeg `ebur128` sur deux signaux (±0,1 LU et ±1 LU), doubles portes (calme, silence numérique, niveau à −8 LU retenu), plage de sonie (stable ≈ 0, deux niveaux ≈ 10 LU), cas non valables (silence, vide, 200 ms, paramètres) sans `-Inf` ni `NaN`, morceaux de toute taille (octet par octet, 3 octets, 4097 octets, octet isolé) identiques, plusieurs canaux |
+| `transient_test.go` | sans réglage / NaN / fréquence nulle : flux identique ; **sons stables intacts** (5 fréquences de 40 Hz à 8 kHz × 2 niveaux × 4 réglages extrêmes : ±0,2 dB et distorsion < −45 dB) ; attaque et tenue agissant chacune sur sa partie (début ou queue) et croissant avec le réglage ; indépendance du niveau ; détection liée stéréo ; bruit sous −70 dBFS et silence intacts ; aucun écrêtage ; réglages ramenés dans [−1, 1] ; lecture fragmentée ; facteur de crête d'une boucle de batterie |
 | `filters_test.go` | −3 dB à la coupure à tous les ordres (1 à 8, trois fréquences d'échantillonnage), pente de 6·n dB par octave contre la courbe de Butterworth, bande passante plate, Q respecté à l'ordre 2 et ordres hors bornes ramenés, gain ignoré (même à 0 ou NaN), fréquences invalides ignorées, mesure de bout en bout sur un flux, combinaison avec d'autres bandes et lecture fragmentée |
 | `normalize_test.go` | cible atteinte (monter, descendre, cas streaming ; ± 0,15 LU) avec plafond respecté et longueur conservée, baisse = simple gain (bit à bit), montée avec limiteur actif, cibles inatteignables (plafond trop bas, gain maximal, `MaxBoostDB`) avec raison et meilleur résultat sous le plafond, gains de plus de 24 dB répartis sur plusieurs bandes, idempotence, équilibre gauche/droite, silence / vide / 100 ms intacts, cibles et plafonds invalides (NaN, hors bornes) en erreur, entrée non modifiée |
 | `ab_test.go` | niveau efficace (sinus, silence numérique ignoré, paramètres invalides), gains qui égalisent les sonies sans jamais relever (traité plus fort, original plus fort, égaux, silence), sonie et non niveau efficace (basse contre 3 kHz), repli sur le niveau efficace sous 400 ms, `ApplyGain` (identité à 0 dB, −6 dB, écrêtage, copie, octet isolé), segments purs hors fondu, fondu linéaire monotone dans les deux sens, deux flux identiques bit à bit, entrelacement stéréo, longueur et paramètres invalides |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
-| `cmd/audioprofile/fx_test.go` | `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
+| `cmd/audioprofile/fx_test.go` | `-fx transient` (identité sans réglage, attaque mesurée, bornes), `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
 | `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, annonce de la source en cours à l'instant et juste avant son segment, annonces retardées dans l'ordre, pas de couleur hors terminal, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, `-target-lufs` (−14 / −23 / −30 mesurés sur la sortie, après un profil, avec `-loudness`, cible inatteignable, silence, toutes les erreurs d'options), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues
@@ -661,6 +696,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 - La mesure de sonie pèse tous les canaux de la même façon (exact en mono et en stéréo, approché pour du 5.1), et le plafond des crêtes porte sur les valeurs d'échantillons, pas sur les crêtes inter-échantillons (*true peak*).
 - Les paramètres des profils (dont `radio-*`) n'ont pas été recalibrés sur la sonie : leurs réglages restent ceux d'une calibration sur le niveau d'un sinus et sur le niveau efficace. La sonie « avant / après » se mesure avec `-loudness`, et `-target-lufs` ou `-ab` permettent de comparer à sonie égale.
 - Les profils `radio-*` n'ont pas été validés à l'oreille non plus. Leurs réglages sont des points de départ, calés par mesure sur trois morceaux : niveau, crête, plage dynamique et côté/milieu.
+- Le renforçateur de transitoires n'a pas d'anticipation (les tout premiers millièmes de seconde d'un son ne sont pas atteints) et son plafond doux limite l'effet sur les masters dont les crêtes sont déjà à 0 dBFS.
 - Les filtres de séparation du compresseur multibande sont à phase minimale, pas à phase linéaire. Le limiteur borne les crêtes d'échantillons (pas les crêtes inter-échantillons) et n'apporte pas de saturation ou d'écrêtage doux en plus.
 - Au-delà de l'intensité 1, le volume baisse et le niveau n'est plus calibré sur l'entrée ; un signal à pleine échelle (0 dBFS) peut écrêter plus largement qu'à l'intensité 1 (Pop, Vocal).
 - Les réglages des profils n'ont pas été validés à l'oreille : ils sont vérifiés par mesure (forme des courbes, niveaux) mais restent des points de départ à affiner.

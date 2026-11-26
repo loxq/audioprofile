@@ -57,6 +57,27 @@ var fxDefs = []fxDef{
 			}
 		},
 	},
+	{
+		name: "transient",
+		doc:  "renforçateur de transitoires : accentue ou adoucit l'attaque et la queue des sons, sans seuil",
+		params: []fxParam{
+			{"attack", 0, false, "attaque, de -1 (aplatie) à 1 (marquée)"},
+			{"sustain", 0, false, "queue des sons, de -1 (raccourcie) à 1 (allongée)"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			for _, k := range []string{"attack", "sustain"} {
+				if v[k] < -1 || v[k] > 1 {
+					return fmt.Errorf("%s doit être dans [-1, 1] (reçu %g)", k, v[k])
+				}
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.TransientShaper(src, rate, channels, audioprofile.TransientSettings{Attack: v["attack"], Sustain: v["sustain"]})
+			}
+		},
+	},
 }
 
 func checkFilter(v map[string]float64, rate, channels int) error {

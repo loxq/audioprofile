@@ -62,6 +62,20 @@ type chain struct {
 	post   []coeffs            // filtres appliqués après la saturation (timbre, baffle…)
 	stereo *stereoSettings     // élargisseur stéréo (nil = aucun)
 	limit  *LimiterSettings    // limiteur de crête, dernier étage (nil = aucun)
+
+	// effects : effets travaillant trame par trame (renforçateur de transitoires, réverbération…),
+	// appliqués dans l'ordre après l'élargisseur et avant le limiteur.
+	effects []effectSpec
+}
+
+// frameStage est un étage de traitement qui modifie sur place une trame (un échantillon par
+// canal, échelle int16).
+type frameStage interface{ apply(frame []float64) }
+
+// effectSpec est le réglage d'un effet : il sait construire son étage pour une fréquence
+// d'échantillonnage et un nombre de canaux donnés, ou renvoie nil si l'effet est sans effet.
+type effectSpec interface {
+	stage(fs float64, channels int) frameStage
 }
 
 // newEqualizerReader est Equalizer avec, en option, un compresseur puis une
@@ -90,14 +104,20 @@ func newChainReader(src io.Reader, sampleRate, channels int, c chain) io.Reader 
 	var wid *widener
 	var mb *multiband
 	var lim *limiter
+	var fx []frameStage
 	if sampleRate > 0 {
 		lim = newLimiter(float64(sampleRate), channels, c.limit)
 		wid = newWidener(float64(sampleRate), channels, c.stereo)
 		mb = newMultiband(float64(sampleRate), channels, c.multi)
+		for _, e := range c.effects {
+			if st := e.stage(float64(sampleRate), channels); st != nil {
+				fx = append(fx, st)
+			}
+		}
 	}
 	r := &reader{
-		src: src, channels: channels, sat: sats, comp: cmp, multi: mb, wid: wid, lim: lim,
-		passthru: len(coefs) == 0 && sats == nil && cmp == nil && mb == nil && len(post) == 0 && wid == nil && lim == nil,
+		src: src, channels: channels, sat: sats, comp: cmp, multi: mb, wid: wid, lim: lim, fx: fx,
+		passthru: len(coefs) == 0 && sats == nil && cmp == nil && mb == nil && len(post) == 0 && wid == nil && lim == nil && len(fx) == 0,
 		frame:    make([]float64, channels),
 	}
 	if !r.passthru {
@@ -234,6 +254,7 @@ type reader struct {
 	post     [][]biquad   // post[canal][filtre] : filtres appliqués après la saturation
 	wid      *widener     // élargisseur stéréo, après les filtres finaux (peut être nil)
 	lim      *limiter     // limiteur à anticipation, dernier étage (peut être nil)
+	fx       []frameStage // effets trame par trame, après l'élargisseur et avant le limiteur
 	frame    []float64    // tampon de travail : une trame (un échantillon par canal)
 	passthru bool
 
@@ -337,6 +358,9 @@ func (r *reader) run(out []byte) []byte {
 	if r.wid != nil {
 		r.wid.apply(r.frame)
 	}
+	for _, st := range r.fx {
+		st.apply(r.frame)
+	}
 	if r.lim != nil {
 		if !r.lim.apply(r.frame) {
 			return out
@@ -344,7 +368,7 @@ func (r *reader) run(out []byte) []byte {
 	}
 	for ch := 0; ch < r.channels; ch++ {
 		y := r.frame[ch]
-		if r.lim == nil && (len(r.post[ch]) > 0 || r.wid != nil) {
+		if r.lim == nil && (len(r.post[ch]) > 0 || r.wid != nil || len(r.fx) > 0) {
 			// les filtres finaux déphasent l'onde saturée et l'élargissement additionne
 			// le côté au milieu : les pics peuvent dépasser la pleine échelle même avec
 			// un gain de 0 dB au maximum (le limiteur, lui, garantit son plafond)
