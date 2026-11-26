@@ -88,6 +88,28 @@ var fxDefs = []fxDef{
 		},
 	},
 	{
+		name: "notch",
+		doc:  "filtre coupe-bande étroit (zéro exact à freq, largeur à -3 dB de freq/q) : retire un ronflement à 50 ou 60 Hz, puis ses harmoniques avec d'autres -fx notch",
+		params: []fxParam{
+			{"freq", 0, true, "fréquence supprimée en Hz"},
+			{"q", 10, false, "facteur de qualité, de 0,1 à 1000 : plus il est grand, plus la bande est étroite"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			if !(v["freq"] > 0) || v["freq"] >= float64(rate)/2 {
+				return fmt.Errorf("freq doit être dans ]0, %g[ Hz (reçu %g)", float64(rate)/2, v["freq"])
+			}
+			if v["q"] < 0.1 || v["q"] > 1000 {
+				return fmt.Errorf("q doit être dans [0.1, 1000] (reçu %g)", v["q"])
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.NotchFilter(src, rate, channels, v["freq"], v["q"])
+			}
+		},
+	},
+	{
 		name: "gate",
 		doc:  "gate / expandeur descendant : réduit les passages sous le seuil (bruit de fond entre les phrases ou les notes) ; ratio 100 = gate franc",
 		params: []fxParam{

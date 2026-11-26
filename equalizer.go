@@ -25,6 +25,7 @@ const (
 	Gain                      // gain global sur tout le spectre (FreqHz et Q ignorés)
 	HighPass                  // passe-haut de Butterworth : coupe sous FreqHz (GainDB ignoré ; voir Order)
 	LowPass                   // passe-bas de Butterworth : coupe au-dessus de FreqHz (GainDB ignoré ; voir Order)
+	Notch                     // coupe-bande étroit centré sur FreqHz, par exemple un ronflement à 50 Hz (GainDB ignoré ; Q <= 0 → 10)
 )
 
 // Band décrit une bande d'un égaliseur paramétrique.
@@ -147,6 +148,16 @@ func designBands(fs float64, bands []Band) []coeffs {
 			}
 			continue
 		}
+		if b.Type == Notch {
+			if b.FreqHz > 0 && b.FreqHz < fs/2 {
+				q := b.Q
+				if q <= 0 {
+					q = defaultNotchQ
+				}
+				coefs = append(coefs, notch(fs, b.FreqHz, math.Max(minQ, q)))
+			}
+			continue
+		}
 		if b.GainDB == 0 || math.IsNaN(b.GainDB) {
 			continue
 		}
@@ -174,6 +185,10 @@ func designBands(fs float64, bands []Band) []coeffs {
 	}
 	return coefs
 }
+
+// defaultNotchQ est le facteur de qualité d'un Notch quand Q <= 0 : une bande étroite
+// (à 50 Hz, environ 5 Hz de large à −3 dB), bien plus que le 1/√2 des autres bandes.
+const defaultNotchQ = 10.0
 
 // butterworthMaxOrder est l'ordre maximal d'un filtre HighPass ou LowPass.
 const butterworthMaxOrder = 8
@@ -232,6 +247,14 @@ func HighPassFilter(src io.Reader, sampleRate, channels int, cutoffHz float64, o
 // LowPassFilter est le pendant de HighPassFilter : il coupe les aigus au-dessus de cutoffHz.
 func LowPassFilter(src io.Reader, sampleRate, channels int, cutoffHz float64, order int) io.Reader {
 	return Equalizer(src, sampleRate, channels, []Band{{Type: LowPass, FreqHz: cutoffHz, Order: order}})
+}
+
+// NotchFilter renvoie un flux PCM (s16le, entrelacé) dont une bande étroite autour de freqHz est supprimée
+// (filtre coupe-bande du second ordre : le gain est nul à freqHz, et la largeur à −3 dB vaut
+// freqHz / q). q <= 0 → 10. Pour retirer un ronflement du secteur : NotchFilter(src, rate, ch, 50, 10),
+// puis 100, 150… pour ses harmoniques. Une fréquence <= 0, NaN ou >= Nyquist laisse le flux tel quel.
+func NotchFilter(src io.Reader, sampleRate, channels int, freqHz, q float64) io.Reader {
+	return Equalizer(src, sampleRate, channels, []Band{{Type: Notch, FreqHz: freqHz, Q: q}})
 }
 
 // singleBand applique une seule bande dont le gain vaut intensity × maxGainDB,
@@ -467,6 +490,22 @@ func lowPass(fs, f0, q float64) coeffs {
 		b0: (1 - cosw) / 2 / a0,
 		b1: (1 - cosw) / a0,
 		b2: (1 - cosw) / 2 / a0,
+		a1: -2 * cosw / a0,
+		a2: (1 - alpha) / a0,
+	}
+}
+
+// notch : filtre coupe-bande du second ordre (RBJ Audio EQ Cookbook).
+func notch(fs, f0, q float64) coeffs {
+	w0 := 2 * math.Pi * f0 / fs
+	cosw, sinw := math.Cos(w0), math.Sin(w0)
+	alpha := sinw / (2 * q)
+
+	a0 := 1 + alpha
+	return coeffs{
+		b0: 1 / a0,
+		b1: -2 * cosw / a0,
+		b2: 1 / a0,
 		a1: -2 * cosw / a0,
 		a2: (1 - alpha) / a0,
 	}

@@ -398,3 +398,32 @@ func TestFXGate(t *testing.T) {
 		t.Error("gate absent de -list-fx")
 	}
 }
+
+// -fx notch : supprime la fréquence visée (ronflement à 50 Hz), laisse le reste, bornes vérifiées.
+func TestFXNotch(t *testing.T) {
+	if g := fxGain(t, 50, "-fx", "notch:freq=50,q=10"); g > -40 {
+		t.Errorf("50 Hz : %.1f dB, attendu < −40", g)
+	}
+	if g := fxGain(t, 1000, "-fx", "notch:freq=50"); math.Abs(g) > 0.1 {
+		t.Errorf("1 kHz : %+.2f dB, attendu intact", g)
+	}
+	// ronflement et harmonique : deux effets de suite
+	if g := fxGain(t, 100, "-fx", "notch:freq=50", "-fx", "notch:freq=100,q=20"); g > -40 {
+		t.Errorf("100 Hz après deux notch : %.1f dB, attendu < −40", g)
+	}
+	in := pcm(200, 1000, 2)
+	for _, tc := range []struct{ args, want string }{
+		{"notch", `paramètre "freq" obligatoire`},
+		{"notch:freq=0", "freq doit être dans"},
+		{"notch:freq=22050", "freq doit être dans"},
+		{"notch:freq=50,q=0", "q doit être dans [0.1, 1000]"},
+		{"notch:freq=50,q=5000", "q doit être dans [0.1, 1000]"},
+	} {
+		if _, _, err := runCLI(t, in, "-fx", tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("-fx %s : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
+	}
+	if list, _, _ := runCLI(t, nil, "-list-fx"); !strings.Contains(list, "notch") {
+		t.Error("notch absent de -list-fx")
+	}
+}
