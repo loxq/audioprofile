@@ -88,6 +88,51 @@ var fxDefs = []fxDef{
 		},
 	},
 	{
+		name: "lofi",
+		doc:  "lo-fi : un vieux support (bande passante réduite, saturation de bande, wow et flutter, quantification, craquements de vinyle, souffle) ; 0 désactive une partie",
+		params: []fxParam{
+			{"lowcut", 100, false, "passe-haut en Hz (0 : aucun), de 10 à Nyquist"},
+			{"highcut", 5000, false, "passe-bas en Hz (0 : aucun), de 100 à Nyquist"},
+			{"bits", 12, false, "quantification sur 1 à 15 bits (0 ou 16 : aucune)"},
+			{"samplerate", 0, false, "fréquence d'échantillonnage réduite en Hz, de 1000 à celle du flux (0 : aucune)"},
+			{"wobble", 0.4, false, "wow et flutter, de 0 à 1"},
+			{"drive", 4, false, "saturation de bande en dB, de 0 à 24"},
+			{"crackle", 0.3, false, "craquements de vinyle, de 0 à 1"},
+			{"hiss", 0.2, false, "souffle de bande, de 0 à 1 (1 = -40 dBFS)"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			nyq := float64(rate) / 2
+			if v["lowcut"] != 0 && (v["lowcut"] < 10 || v["lowcut"] >= nyq) {
+				return fmt.Errorf("lowcut doit valoir 0 ou être dans [10, %g[ Hz (reçu %g)", nyq, v["lowcut"])
+			}
+			if v["highcut"] != 0 && (v["highcut"] < 100 || v["highcut"] >= nyq) {
+				return fmt.Errorf("highcut doit valoir 0 ou être dans [100, %g[ Hz (reçu %g)", nyq, v["highcut"])
+			}
+			if b := v["bits"]; b != math.Trunc(b) || b < 0 || b > 16 {
+				return fmt.Errorf("bits doit être un entier de 0 à 16 (reçu %g)", b)
+			}
+			if sr := v["samplerate"]; sr != 0 && (sr < 1000 || sr >= float64(rate)) {
+				return fmt.Errorf("samplerate doit valoir 0 ou être dans [1000, %d[ Hz (reçu %g)", rate, sr)
+			}
+			for _, k := range []string{"wobble", "crackle", "hiss"} {
+				if v[k] < 0 || v[k] > 1 {
+					return fmt.Errorf("%s doit être dans [0, 1] (reçu %g)", k, v[k])
+				}
+			}
+			if v["drive"] < 0 || v["drive"] > 24 {
+				return fmt.Errorf("drive doit être dans [0, 24] dB (reçu %g)", v["drive"])
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.LoFi(src, rate, channels, audioprofile.LoFiSettings{
+					LowCutHz: v["lowcut"], HighCutHz: v["highcut"], Bits: int(v["bits"]), SampleRateHz: v["samplerate"],
+					Wobble: v["wobble"], DriveDB: v["drive"], Crackle: v["crackle"], Hiss: v["hiss"]})
+			}
+		},
+	},
+	{
 		name: "chorus",
 		doc:  "chorus : plusieurs copies légèrement retardées dont le retard oscille (épaissit, élargit en stéréo)",
 		params: []fxParam{

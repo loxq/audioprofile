@@ -73,6 +73,11 @@ type chain struct {
 // canal, échelle int16).
 type frameStage interface{ apply(frame []float64) }
 
+// latencyStage est implémenté par les étages qui retardent leur sortie de quelques trames (par exemple une ligne à retard
+// qu'on module autour d'un retard moyen). Le lecteur rattrape ce retard : il jette les premières trames de sortie et vide
+// la fin avec du silence, comme pour le limiteur, de sorte que le flux garde sa longueur et son alignement.
+type latencyStage interface{ latency() int }
+
 // effectSpec est le réglage d'un effet : il sait construire son étage pour une fréquence
 // d'échantillonnage et un nombre de canaux donnés, ou renvoie nil si l'effet est sans effet.
 type effectSpec interface {
@@ -106,6 +111,7 @@ func newChainReader(src io.Reader, sampleRate, channels int, c chain) io.Reader 
 	var mb *multiband
 	var lim *limiter
 	var fx []frameStage
+	fxLatency := 0
 	if sampleRate > 0 {
 		lim = newLimiter(float64(sampleRate), channels, c.limit)
 		wid = newWidener(float64(sampleRate), channels, c.stereo)
@@ -113,11 +119,14 @@ func newChainReader(src io.Reader, sampleRate, channels int, c chain) io.Reader 
 		for _, e := range c.effects {
 			if st := e.stage(float64(sampleRate), channels); st != nil {
 				fx = append(fx, st)
+				if ls, ok := st.(latencyStage); ok {
+					fxLatency += ls.latency()
+				}
 			}
 		}
 	}
 	r := &reader{
-		src: src, channels: channels, sat: sats, comp: cmp, multi: mb, wid: wid, lim: lim, fx: fx,
+		src: src, channels: channels, sat: sats, comp: cmp, multi: mb, wid: wid, lim: lim, fx: fx, skip: fxLatency, fxLatency: fxLatency,
 		passthru: len(coefs) == 0 && sats == nil && cmp == nil && mb == nil && len(post) == 0 && wid == nil && lim == nil && len(fx) == 0,
 		frame:    make([]float64, channels),
 	}
@@ -268,18 +277,20 @@ func singleBand(src io.Reader, sampleRate, channels int, intensity float64, b Ba
 // ---------------------------------------------------------------- lecteur
 
 type reader struct {
-	src      io.Reader
-	channels int
-	filters  [][]biquad   // filters[canal][bande]
-	comp     *compressor  // compresseur, après les filtres (peut être nil)
-	multi    *multiband   // compresseur multibande, après le compresseur (peut être nil)
-	sat      []*saturator // saturation + gain de sortie, un par canal, après le compresseur (peut être nil)
-	post     [][]biquad   // post[canal][filtre] : filtres appliqués après la saturation
-	wid      *widener     // élargisseur stéréo, après les filtres finaux (peut être nil)
-	lim      *limiter     // limiteur à anticipation, dernier étage (peut être nil)
-	fx       []frameStage // effets trame par trame, après l'élargisseur et avant le limiteur
-	frame    []float64    // tampon de travail : une trame (un échantillon par canal)
-	passthru bool
+	src       io.Reader
+	channels  int
+	filters   [][]biquad   // filters[canal][bande]
+	comp      *compressor  // compresseur, après les filtres (peut être nil)
+	multi     *multiband   // compresseur multibande, après le compresseur (peut être nil)
+	sat       []*saturator // saturation + gain de sortie, un par canal, après le compresseur (peut être nil)
+	post      [][]biquad   // post[canal][filtre] : filtres appliqués après la saturation
+	wid       *widener     // élargisseur stéréo, après les filtres finaux (peut être nil)
+	lim       *limiter     // limiteur à anticipation, dernier étage (peut être nil)
+	fx        []frameStage // effets trame par trame, après l'élargisseur et avant le limiteur
+	skip      int          // trames de sortie des effets encore à jeter (leur latence), avant le limiteur
+	fxLatency int          // latence totale des effets, en trames
+	frame     []float64    // tampon de travail : une trame (un échantillon par canal)
+	passthru  bool
 
 	pending []byte // octets lus mais ne formant pas encore une trame complète
 	out     []byte // octets traités, pas encore rendus à l'appelant
@@ -337,13 +348,17 @@ func (r *reader) process(b []byte) []byte {
 	return out
 }
 
-// flush vide le retard du limiteur en lui faisant traverser du silence.
+// flush vide le retard du limiteur et des effets à latence en leur faisant traverser du silence.
 func (r *reader) flush() []byte {
-	if r.passthru || r.lim == nil {
+	n := r.fxLatency
+	if r.lim != nil {
+		n += r.lim.delay
+	}
+	if r.passthru || n == 0 {
 		return nil
 	}
 	var out []byte
-	for i := 0; i < r.lim.delay; i++ {
+	for i := 0; i < n; i++ {
 		for ch := range r.frame {
 			r.frame[ch] = 0
 		}
@@ -383,6 +398,10 @@ func (r *reader) run(out []byte) []byte {
 	}
 	for _, st := range r.fx {
 		st.apply(r.frame)
+	}
+	if r.skip > 0 { // la sortie des effets n'est pas encore alignée sur l'entrée
+		r.skip--
+		return out
 	}
 	if r.lim != nil {
 		if !r.lim.apply(r.frame) {

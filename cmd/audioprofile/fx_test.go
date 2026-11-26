@@ -552,3 +552,56 @@ func TestFXChorusAndFlanger(t *testing.T) {
 		}
 	}
 }
+
+// -fx lofi : modifie le flux et garde sa longueur, tout à zéro est identique, bornes vérifiées.
+func TestFXLoFi(t *testing.T) {
+	in := pcm(400, 44100, 2)
+	out, _, err := runCLI(t, in, "-fx", "lofi")
+	if err != nil || len(out) != len(in) || out == string(in) {
+		t.Fatalf("lofi : err=%v longueur %d/%d, doit être modifié", err, len(out), len(in))
+	}
+	again, _, _ := runCLI(t, in, "-fx", "lofi")
+	if again != out {
+		t.Error("lofi doit être reproductible (graine fixe)")
+	}
+	zero := "lofi:lowcut=0,highcut=0,bits=0,wobble=0,drive=0,crackle=0,hiss=0"
+	if same, _, err := runCLI(t, in, "-fx", zero); err != nil || same != string(in) {
+		t.Errorf("tous les réglages à 0 : le flux doit rester identique (err=%v)", err)
+	}
+	// quantification seule : chaque échantillon est un multiple du pas
+	q, _, err := runCLI(t, in, "-fx", "lofi:lowcut=0,highcut=0,bits=6,wobble=0,drive=0,crackle=0,hiss=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range samplesOf(q) {
+		if v%1024 != 0 { // 2^(16−6)
+			t.Fatalf("6 bits : échantillon %d = %d, attendu un multiple de 1024", i, v)
+		}
+	}
+	for _, tc := range []struct{ args, want string }{
+		{"lofi:lowcut=5", "lowcut doit valoir 0 ou être dans"},
+		{"lofi:highcut=50", "highcut doit valoir 0 ou être dans"},
+		{"lofi:highcut=30000", "highcut doit valoir 0 ou être dans"},
+		{"lofi:bits=2.5", "bits doit être un entier de 0 à 16"},
+		{"lofi:bits=20", "bits doit être un entier de 0 à 16"},
+		{"lofi:samplerate=500", "samplerate doit valoir 0 ou être dans"},
+		{"lofi:samplerate=44100", "samplerate doit valoir 0 ou être dans"},
+		{"lofi:wobble=2", "wobble doit être dans [0, 1]"},
+		{"lofi:crackle=-1", "crackle doit être dans [0, 1]"},
+		{"lofi:hiss=1.5", "hiss doit être dans [0, 1]"},
+		{"lofi:drive=30", "drive doit être dans [0, 24]"},
+		{"lofi:noise=1", `paramètre inconnu "noise"`},
+	} {
+		if _, _, err := runCLI(t, in, "-fx", tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("-fx %s : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
+	}
+	// -ab : le flux traité reste aligné sur l'original (latence rattrapée) : même longueur
+	ab, _, err := runCLI(t, in, "-ab", "-fx", "lofi:wobble=1", "-ab-seconds", "0.3")
+	if err != nil || len(ab) != len(in) {
+		t.Errorf("-ab avec lofi : err=%v longueur %d/%d", err, len(ab), len(in))
+	}
+	if list, _, _ := runCLI(t, nil, "-list-fx"); !strings.Contains(list, "lofi") || !strings.Contains(list, "crackle") {
+		t.Error("lofi absent de -list-fx")
+	}
+}
