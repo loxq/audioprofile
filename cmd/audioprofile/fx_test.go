@@ -478,3 +478,41 @@ func TestFXCrossfeed(t *testing.T) {
 		t.Error("crossfeed absent de -list-fx")
 	}
 }
+
+// -fx delay : un écho apparaît à l'instant demandé, mix 0 identique, pingpong 0 ou 1 seulement, bornes vérifiées.
+func TestFXDelay(t *testing.T) {
+	in := make([]byte, 4*44100)         // 1 s de silence stéréo, avec une impulsion à gauche
+	in[4*100], in[4*100+1] = 0x20, 0x4E // 20 000 en s16le sur le canal gauche, trame 100
+	out, _, err := runCLI(t, in, "-fx", "delay:time=100,feedback=0,mix=0.5")
+	if err != nil || len(out) != len(in) {
+		t.Fatalf("err=%v longueur %d/%d", err, len(out), len(in))
+	}
+	o := samplesOf(out)
+	if o[2*(100+4410)] < 9990 || o[2*(100+4410)] > 10010 { // écho à 100 ms, amplitude 10 000
+		t.Errorf("écho à 100 ms : %d, attendu ≈ 10 000", o[2*(100+4410)])
+	}
+	if same, _, err := runCLI(t, in, "-fx", "delay:mix=0"); err != nil || same != string(in) {
+		t.Errorf("mix 0 : le flux doit rester identique (err=%v)", err)
+	}
+	if _, _, err := runCLI(t, in, "-fx", "delay:pingpong=1,time=50"); err != nil {
+		t.Errorf("pingpong=1 : %v", err)
+	}
+	for _, tc := range []struct{ args, want string }{
+		{"delay:time=0", "time doit être dans [1, 2000]"},
+		{"delay:time=3000", "time doit être dans [1, 2000]"},
+		{"delay:feedback=1", "feedback doit être dans [0, 0.95]"},
+		{"delay:mix=2", "mix doit être dans [0, 1]"},
+		{"delay:damping=5", "damping doit valoir 0 ou être dans"},
+		{"delay:damping=30000", "damping doit valoir 0 ou être dans"},
+		{"delay:pingpong=0.5", "pingpong doit valoir 0 ou 1"},
+		{"delay:pingpong=2", "pingpong doit valoir 0 ou 1"},
+		{"delay:echo=3", `paramètre inconnu "echo"`},
+	} {
+		if _, _, err := runCLI(t, in, "-fx", tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("-fx %s : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
+	}
+	if list, _, _ := runCLI(t, nil, "-list-fx"); !strings.Contains(list, "pingpong") {
+		t.Error("delay absent de -list-fx")
+	}
+}

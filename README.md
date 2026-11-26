@@ -14,6 +14,7 @@ Ce que le paquet `audioprofile` propose :
 - `Limiter` : **limiteur de crête à anticipation** (plafond garanti, sortie recalée sur l'entrée) ;
 - `DeEsser` : **de-esser** (atténue les sifflantes seulement quand elles ressortent) ;
 - `Exciter` : **exciter** (harmoniques ajoutées aux aigus, sans retard ni creux) ;
+- `Delay` : **delay** (écho avec rétroaction, amortissement des aigus et ping-pong stéréo) ;
 - `Reverb` : **réverbération** (huit filtres en peigne et quatre passe-tout par canal, niveau calibré, retard préalable) ;
 - `TransientShaper` : **renforçateur de transitoires** (attaque et queue des sons, sans seuil) ;
 - `StereoWidth` : **élargisseur stéréo** mid/side qui garde les basses au centre et la compatibilité mono ;
@@ -549,6 +550,32 @@ Le signal passe par un passe-haut de Linkwitz-Riley d'ordre 4 à `FreqHz`, puis 
 - **Mesuré avec `-fx exciter`** (défauts : `Amount = 0,3`, `DriveDB = 20`, séparation à 3 kHz) sur les trois morceaux de `testdata/` : la sonie au-dessus de 9 kHz bouge de 0,0 / +0,2 / +0,6 dB (calme / moyen / très fort) et la sonie totale d'au plus 0,1 LU ; avec `Amount = 0,6` et `Warmth = 0,4`, de 0,0 / +0,5 / +1,3 dB. **L'effet est discret par construction** : il n'est franc que sur les aigus forts, et nul sur le morceau calme.
 - **Coût** : 231 s de stéréo traitées en 3,7 s.
 
+### Delay (écho)
+
+```go
+type DelaySettings struct {
+	TimeMs    float64 // entre deux échos, de 1 à 2000 ms
+	Feedback  float64 // part réinjectée à chaque écho, de 0 (un seul écho) à 0,95
+	Mix       float64 // niveau des échos par rapport au sec, de 0 (sans effet) à 1
+	DampingHz float64 // passe-bas dans la boucle : chaque écho est plus sombre ; <= 0 : aucun
+	PingPong  bool    // stéréo : les échos rebondissent entre gauche et droite
+}
+
+func Delay(src io.Reader, sampleRate, channels int, s DelaySettings) io.Reader
+```
+
+Ajoute des **échos** au signal : `sortie = sec + Mix × échos`. Le sec n'est ni retardé ni atténué.
+
+- **Échos exacts** : l'écho k arrive à `k × TimeMs` (à la trame près) avec l'amplitude `Mix × Feedback^(k−1)` (testé impulsion par impulsion jusqu'au 6ᵉ écho, et rien entre deux échos). `Feedback = 0` donne un seul écho. La queue atteint −60 dB après environ `TimeMs × 6,9 / −ln(Feedback)`.
+- **Chaque canal a sa ligne à retard** : la voix de gauche garde ses échos à gauche, celle de droite à droite ; un canal silencieux reste exactement silencieux.
+- **`DampingHz`** place un passe-bas du premier ordre dans la boucle : à chaque tour, les échos perdent le gain du passe-bas en plus de `Feedback`, comme dans un écho à bande (mesuré sur un aigu de 6 kHz avec 2 kHz : l'écho 2 perd le gain du filtre une fois, l'écho 3 deux fois, à 1 dB près).
+- **`PingPong`** (stéréo seulement) : l'entrée est la moyenne des deux canaux ; le premier écho sort à gauche, le deuxième à droite, le troisième à gauche, etc. (testé aux trames exactes, avec `Feedback^(k−1)`). L'image stéréo d'origine n'est conservée que par le sec. Ignoré en mono et à plus de deux canaux.
+- **La queue est coupée à la fin du flux** : la sortie a la longueur de l'entrée, les derniers échos s'arrêtent net. Pour les laisser mourir, ajoutez du silence à la fin (`ffmpeg … -af apad=pad_dur=4`).
+- Les états minuscules sont ramenés à zéro : après un long silence, l'écho résiduel est exactement nul (pas de nombres dénormalisés).
+- Un plafond doux (genou à 0,8) arrondit les pics qui dépasseraient la pleine échelle. Valeurs ramenées dans leurs bornes (NaN compte pour 0). Sans effet si `Mix` est nul ou `sampleRate <= 0`.
+- **Mesuré avec `-fx delay`** (défauts : 350 ms, rétroaction 0,4, mélange 0,3) sur les trois morceaux de `testdata/` : sonie intégrée +0,1 / +0,4 / +0,4 LU (calme / moyen / très fort), plage de sonie +0,1 / +0,1 / −0,1 LU ; avec `time=300,feedback=0.5,mix=0.4,damping=3000,pingpong=1` : +0,5 / +0,4 / +0,3 LU. Les échos s'ajoutent au sec : la sonie monte un peu (contrairement à la réverbération, qui mélange à puissance constante).
+- **Coût** : 231 s de stéréo traitées en 0,37 s.
+
 ### Réverbération
 
 ```go
@@ -742,6 +769,7 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 | `parcomp` | `threshold` (−30), `ratio` (8), `attack` (ms, 10), `release` (ms, 120), `makeup` (dB, 16), `mix` (0,3) | compression parallèle |
 | `deess` | `freq` (5000), `threshold` (dBFS, −30), `ratio` (4) | de-esser : atténue les sifflantes au-dessus du seuil |
 | `exciter` | `freq` (3000), `amount` (0,3), `drive` (dB, 20), `warmth` (0) | harmoniques ajoutées aux aigus forts |
+| `delay` | `time` (ms, 350), `feedback` (0,4), `mix` (0,3), `damping` (Hz, 0 = aucun), `pingpong` (0 ou 1) | échos, avec ping-pong stéréo |
 | `reverb` | `room` (0,5), `damping` (0,5), `width` (1), `predelay` (ms, 0), `mix` (0,25) | réverbération (Freeverb), queue coupée à la fin du flux |
 | `transient` | `attack`, `sustain` (de −1 à 1, défaut 0) | renforçateur de transitoires |
 | `hpf` | `freq` (Hz, obligatoire), `order` (1 à 8, défaut 2) | filtre passe-haut de Butterworth |
@@ -860,6 +888,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `parallel_test.go` | identité (mix nul, NaN, négatif, compresseur sans effet, seuil NaN, fréquence nulle) ; `Mix = 1` égal au compresseur seul, `Mix = 0,5` égal à la moyenne à 1 LSB ; passage faible relevé de plus de 3 dB de plus que le fort, queue d'un son relevée de plus de 4 dB de plus que son attaque ; détection liée stéréo ; silence exact ; `Mix` ramené dans [0, 1] ; lecture fragmentée |
 | `deesser_test.go` | identité (rapport ≤ 1 ou NaN, séparation à Nyquist ou NaN, seuil NaN, fréquence nulle) ; sifflante réduite de plus de 6 dB sans toucher une note de 500 Hz avant, pendant et après ; 7 kHz sous le seuil à ±0,3 dB ; rapport et seuil réglant la réduction ; séparation au-dessus de la sifflante ; défaut de 5 kHz ; détection liée stéréo ; lecture fragmentée |
 | `exciter_test.go` | identité (quantité nulle, NaN, négative, Nyquist) ; harmoniques au-dessus de la séparation (3ᵉ toujours, 2ᵉ seulement avec `Warmth`) et note de 200 Hz intacte ; **aucun filtre en peigne** (balayage de 15 fréquences, 5 réglages, 3 niveaux : transparent à −55 dBFS, ±1,8 dB à −20 dBFS) ; repliement sous −30 dBc ; canal silencieux, silence exact, aucun écrêtage ; bornes ; lecture fragmentée |
+| `delay_test.go` | identité (mix nul, NaN, négatif, fréquence nulle) ; échos aux trames exactes avec amplitude `Mix × Feedback^(k−1)` et rien ailleurs (3 réglages) ; canaux indépendants (canal silencieux exact) ; ping-pong aux trames exactes, ignoré en mono et à 3 canaux ; amortissement mesuré à 1 dB près sur les échos 2 et 3 ; bornes ; silence exact ; lecture fragmentée ; état minuscule ramené à zéro après 60 s |
 | `reverb_test.go` | identité (mix nul, NaN, négatif, fréquence nulle) ; durée de la queue croissante avec la taille de la pièce (RT60 par intégrale de Schroeder, sans dépendre des longueurs exactes) ; amortissement qui raccourcit les aigus de plus de 6 dB ; niveau du mouillé constant à ±1,5 dB sur bruit blanc pour cinq réglages ; retard préalable respecté ; largeur 0 (canaux identiques) et 1 ; silence exact, queue qui s'éteint à zéro exact et aucun état minuscule non nul ; RT60 voisin à 44,1 / 48 / 96 kHz ; mélange à puissance constante et volume stable ; aucun écrêtage ; bornes ; mono, stéréo, 3 canaux et lecture fragmentée |
 | `transient_test.go` | sans réglage / NaN / fréquence nulle : flux identique ; **sons stables intacts** (5 fréquences de 40 Hz à 8 kHz × 2 niveaux × 4 réglages extrêmes : ±0,2 dB et distorsion < −45 dB) ; attaque et tenue agissant chacune sur sa partie (début ou queue) et croissant avec le réglage ; indépendance du niveau ; détection liée stéréo ; bruit sous −70 dBFS et silence intacts ; aucun écrêtage ; réglages ramenés dans [−1, 1] ; lecture fragmentée ; facteur de crête d'une boucle de batterie |
 | `filters_test.go` | −3 dB à la coupure à tous les ordres (1 à 8, trois fréquences d'échantillonnage), pente de 6·n dB par octave contre la courbe de Butterworth, bande passante plate, Q respecté à l'ordre 2 et ordres hors bornes ramenés, gain ignoré (même à 0 ou NaN), fréquences invalides ignorées, mesure de bout en bout sur un flux, combinaison avec d'autres bandes et lecture fragmentée |
@@ -867,7 +896,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `ab_test.go` | niveau efficace (sinus, silence numérique ignoré, paramètres invalides), gains qui égalisent les sonies sans jamais relever (traité plus fort, original plus fort, égaux, silence), sonie et non niveau efficace (basse contre 3 kHz), repli sur le niveau efficace sous 400 ms, `ApplyGain` (identité à 0 dB, −6 dB, écrêtage, copie, octet isolé), segments purs hors fondu, fondu linéaire monotone dans les deux sens, deux flux identiques bit à bit, entrelacement stéréo, longueur et paramètres invalides |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
-| `cmd/audioprofile/fx_test.go` | `-fx crossfeed` (centre identique, fuite à droite, mono, bornes), `-fx notch` (50 Hz supprimé, 1 kHz intact, deux notch de suite, bornes), `-fx gate` (fort intact, faible réduit, ratio 1 identique, bornes), `-fx parcomp` (mix 0 identique, flux modifié, toutes les bornes), `-fx deess` et `-fx exciter` (réduction mesurée, sous le seuil, identité à ratio 1 / amount 0, toutes les bornes, chaîne complète avec un profil), `-fx reverb` (queue après le son, mix 0 identique, défaut, bornes, effets chaînés et nom en `-ab`), `-fx transient` (identité sans réglage, attaque mesurée, bornes), `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
+| `cmd/audioprofile/fx_test.go` | `-fx delay` (écho à l'instant demandé, mix 0 identique, pingpong 0 ou 1 seulement, bornes), `-fx crossfeed` (centre identique, fuite à droite, mono, bornes), `-fx notch` (50 Hz supprimé, 1 kHz intact, deux notch de suite, bornes), `-fx gate` (fort intact, faible réduit, ratio 1 identique, bornes), `-fx parcomp` (mix 0 identique, flux modifié, toutes les bornes), `-fx deess` et `-fx exciter` (réduction mesurée, sous le seuil, identité à ratio 1 / amount 0, toutes les bornes, chaîne complète avec un profil), `-fx reverb` (queue après le son, mix 0 identique, défaut, bornes, effets chaînés et nom en `-ab`), `-fx transient` (identité sans réglage, attaque mesurée, bornes), `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
 | `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, annonce de la source en cours à l'instant et juste avant son segment, annonces retardées dans l'ordre, pas de couleur hors terminal, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, `-target-lufs` (−14 / −23 / −30 mesurés sur la sortie, après un profil, avec `-loudness`, cible inatteignable, silence, toutes les erreurs d'options), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues

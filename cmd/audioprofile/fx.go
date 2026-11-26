@@ -88,6 +88,41 @@ var fxDefs = []fxDef{
 		},
 	},
 	{
+		name: "delay",
+		doc:  "delay (écho) : échos du signal, avec rétroaction, amortissement des aigus et ping-pong stéréo ; la queue est coupée à la fin du flux",
+		params: []fxParam{
+			{"time", 350, false, "durée entre deux échos en ms, de 1 à 2000"},
+			{"feedback", 0.4, false, "part réinjectée à chaque écho, de 0 à 0,95"},
+			{"mix", 0.3, false, "niveau des échos, de 0 (sans effet) à 1"},
+			{"damping", 0, false, "passe-bas dans la boucle en Hz (0 : aucun) : chaque écho est plus sombre"},
+			{"pingpong", 0, false, "1 : les échos rebondissent entre gauche et droite (stéréo), 0 : non"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			if v["time"] < 1 || v["time"] > 2000 {
+				return fmt.Errorf("time doit être dans [1, 2000] ms (reçu %g)", v["time"])
+			}
+			if v["feedback"] < 0 || v["feedback"] > 0.95 {
+				return fmt.Errorf("feedback doit être dans [0, 0.95] (reçu %g)", v["feedback"])
+			}
+			if v["mix"] < 0 || v["mix"] > 1 {
+				return fmt.Errorf("mix doit être dans [0, 1] (reçu %g)", v["mix"])
+			}
+			if v["damping"] != 0 && (v["damping"] < 20 || v["damping"] >= float64(rate)/2) {
+				return fmt.Errorf("damping doit valoir 0 ou être dans [20, %g[ Hz (reçu %g)", float64(rate)/2, v["damping"])
+			}
+			if v["pingpong"] != 0 && v["pingpong"] != 1 {
+				return fmt.Errorf("pingpong doit valoir 0 ou 1 (reçu %g)", v["pingpong"])
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.Delay(src, rate, channels, audioprofile.DelaySettings{
+					TimeMs: v["time"], Feedback: v["feedback"], Mix: v["mix"], DampingHz: v["damping"], PingPong: v["pingpong"] == 1})
+			}
+		},
+	},
+	{
 		name: "crossfeed",
 		doc:  "crossfeed pour casque : mélange un peu de chaque canal dans l'autre aux graves (stéréo seulement), milieu conservé",
 		params: []fxParam{
