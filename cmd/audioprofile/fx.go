@@ -58,6 +58,36 @@ var fxDefs = []fxDef{
 		},
 	},
 	{
+		name: "parcomp",
+		doc:  "compression parallèle : un signal très comprimé (et compensé) mélangé au signal sec, pour plus de densité en gardant les transitoires",
+		params: []fxParam{
+			{"threshold", -30, false, "seuil du compresseur en dBFS, de -80 à 0"},
+			{"ratio", 8, false, "rapport de compression, de 1 à 100"},
+			{"attack", 10, false, "attaque en ms, de 0,1 à 1000"},
+			{"release", 120, false, "relâchement en ms, de 1 à 5000"},
+			{"makeup", 16, false, "compensation du comprimé en dB, de 0 à 24"},
+			{"mix", 0.3, false, "part du comprimé, de 0 (sec) à 1"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			for _, c := range []struct {
+				key    string
+				lo, hi float64
+			}{{"threshold", -80, 0}, {"ratio", 1, 100}, {"attack", 0.1, 1000}, {"release", 1, 5000}, {"makeup", 0, 24}, {"mix", 0, 1}} {
+				if v[c.key] < c.lo || v[c.key] > c.hi {
+					return fmt.Errorf("%s doit être dans [%g, %g] (reçu %g)", c.key, c.lo, c.hi, v[c.key])
+				}
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.ParallelCompressor(src, rate, channels, audioprofile.ParallelCompressionSettings{
+					Compressor: audioprofile.CompressorSettings{ThresholdDB: v["threshold"], Ratio: v["ratio"], AttackMs: v["attack"], ReleaseMs: v["release"], KneeDB: 6, MakeupDB: v["makeup"]},
+					Mix:        v["mix"]})
+			}
+		},
+	},
+	{
 		name: "deess",
 		doc:  "de-esser : atténue les sifflantes (au-dessus de freq) quand elles dépassent le seuil ; le seuil est absolu, à régler pour chaque source",
 		params: []fxParam{

@@ -322,3 +322,31 @@ func TestFXDeEsserAndExciter(t *testing.T) {
 		t.Errorf("chaîne complète : %v", err)
 	}
 }
+
+// -fx parcomp : mix nul identique, le passage faible est relevé plus que le fort, bornes vérifiées.
+func TestFXParallelCompression(t *testing.T) {
+	in := pcm(1000, 44100, 2)
+	if same, _, err := runCLI(t, in, "-fx", "parcomp:mix=0"); err != nil || same != string(in) {
+		t.Errorf("mix 0 : le flux doit rester identique (err=%v)", err)
+	}
+	out, _, err := runCLI(t, in, "-fx", "parcomp:threshold=-40,ratio=10,makeup=12,mix=0.5")
+	if err != nil || len(out) != len(in) || out == string(in) {
+		t.Fatalf("err=%v longueur %d/%d, doit être modifié", err, len(out), len(in))
+	}
+	for _, tc := range []struct{ args, want string }{
+		{"parcomp:threshold=5", "threshold doit être dans [-80, 0]"},
+		{"parcomp:ratio=0.5", "ratio doit être dans [1, 100]"},
+		{"parcomp:attack=0", "attack doit être dans [0.1, 1000]"},
+		{"parcomp:release=9999", "release doit être dans [1, 5000]"},
+		{"parcomp:makeup=30", "makeup doit être dans [0, 24]"},
+		{"parcomp:mix=1.5", "mix doit être dans [0, 1]"},
+		{"parcomp:gain=1", `paramètre inconnu "gain"`},
+	} {
+		if _, _, err := runCLI(t, in, "-fx", tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("-fx %s : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
+	}
+	if list, _, _ := runCLI(t, nil, "-list-fx"); !strings.Contains(list, "parcomp") {
+		t.Error("parcomp absent de -list-fx")
+	}
+}
