@@ -516,3 +516,39 @@ func TestFXDelay(t *testing.T) {
 		t.Error("delay absent de -list-fx")
 	}
 }
+
+// -fx chorus et -fx flanger : flux modifié, mix 0 identique, bornes, depth <= delay.
+func TestFXChorusAndFlanger(t *testing.T) {
+	in := pcm(400, 44100, 2)
+	for _, name := range []string{"chorus", "flanger"} {
+		if same, _, err := runCLI(t, in, "-fx", name+":mix=0"); err != nil || same != string(in) {
+			t.Errorf("%s mix 0 : le flux doit rester identique (err=%v)", name, err)
+		}
+		out, _, err := runCLI(t, in, "-fx", name)
+		if err != nil || len(out) != len(in) || out == string(in) {
+			t.Errorf("%s : err=%v longueur %d/%d, doit être modifié", name, err, len(out), len(in))
+		}
+	}
+	for _, tc := range []struct{ args, want string }{
+		{"chorus:delay=0", "delay doit être dans [1, 50]"},
+		{"chorus:voices=2.5", "voices doit être un entier"},
+		{"chorus:voices=9", "voices doit être dans [1, 6]"},
+		{"chorus:rate=20", "rate doit être dans [0.05, 10]"},
+		{"chorus:mix=1.2", "mix doit être dans [0, 1]"},
+		{"chorus:delay=5,depth=4.9", "ne doit pas dépasser delay - 0,5"},
+		{"flanger:feedback=1", "feedback doit être dans [-0.95, 0.95]"},
+		{"flanger:delay=20", "delay doit être dans [0.3, 10]"},
+		{"flanger:delay=1,depth=0.95", "ne doit pas dépasser delay - 0,2"},
+		{"flanger:tone=3", `paramètre inconnu "tone"`},
+	} {
+		if _, _, err := runCLI(t, in, "-fx", tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("-fx %s : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
+	}
+	list, _, _ := runCLI(t, nil, "-list-fx")
+	for _, want := range []string{"chorus", "flanger", "voices", "feedback"} {
+		if !strings.Contains(list, want) {
+			t.Errorf("%q absent de -list-fx", want)
+		}
+	}
+}

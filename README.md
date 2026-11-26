@@ -14,6 +14,7 @@ Ce que le paquet `audioprofile` propose :
 - `Limiter` : **limiteur de crête à anticipation** (plafond garanti, sortie recalée sur l'entrée) ;
 - `DeEsser` : **de-esser** (atténue les sifflantes seulement quand elles ressortent) ;
 - `Exciter` : **exciter** (harmoniques ajoutées aux aigus, sans retard ni creux) ;
+- `Chorus`, `Flanger` : **effets de modulation** (copies retardées dont le retard oscille, avec interpolation de Hermite) ;
 - `Delay` : **delay** (écho avec rétroaction, amortissement des aigus et ping-pong stéréo) ;
 - `Reverb` : **réverbération** (huit filtres en peigne et quatre passe-tout par canal, niveau calibré, retard préalable) ;
 - `TransientShaper` : **renforçateur de transitoires** (attaque et queue des sons, sans seuil) ;
@@ -550,6 +551,38 @@ Le signal passe par un passe-haut de Linkwitz-Riley d'ordre 4 à `FreqHz`, puis 
 - **Mesuré avec `-fx exciter`** (défauts : `Amount = 0,3`, `DriveDB = 20`, séparation à 3 kHz) sur les trois morceaux de `testdata/` : la sonie au-dessus de 9 kHz bouge de 0,0 / +0,2 / +0,6 dB (calme / moyen / très fort) et la sonie totale d'au plus 0,1 LU ; avec `Amount = 0,6` et `Warmth = 0,4`, de 0,0 / +0,5 / +1,3 dB. **L'effet est discret par construction** : il n'est franc que sur les aigus forts, et nul sur le morceau calme.
 - **Coût** : 231 s de stéréo traitées en 3,7 s.
 
+### Chorus et flanger
+
+```go
+type ChorusSettings struct {
+	DelayMs float64 // retard moyen de chaque voix, de 1 à 50 ms ; <= 0 → 18
+	DepthMs float64 // amplitude de la modulation du retard ; <= 0 → 3 (au plus DelayMs − 0,5)
+	RateHz  float64 // vitesse, de 0,05 à 10 Hz ; <= 0 → 0,8
+	Voices  int     // de 1 à 6 ; <= 0 → 3
+	Mix     float64 // niveau des voix, de 0 (sans effet) à 1
+}
+
+type FlangerSettings struct {
+	DelayMs  float64 // retard moyen, de 0,3 à 10 ms ; <= 0 → 2
+	DepthMs  float64 // amplitude de la modulation ; <= 0 → 1,5 (au plus DelayMs − 0,2)
+	RateHz   float64 // vitesse, de 0,05 à 10 Hz ; <= 0 → 0,25
+	Feedback float64 // rétroaction, de −0,95 à 0,95
+	Mix      float64 // niveau du signal retardé, de 0 (sans effet) à 1
+}
+
+func Chorus(src io.Reader, sampleRate, channels int, s ChorusSettings) io.Reader
+func Flanger(src io.Reader, sampleRate, channels int, s FlangerSettings) io.Reader
+```
+
+Deux effets de **modulation** : le signal est mélangé à des copies retardées dont le retard oscille lentement, `sortie = sec + Mix × copies`. Le sec n'est ni retardé ni modifié.
+
+- **Chorus** : plusieurs voix (de 1 à 6), chacune à `DelayMs ± DepthMs` (sinusoïde de vitesse `RateHz`, décalée d'un tour divisé par le nombre de voix). L'effet d'un ensemble d'instruments jamais tout à fait accordés. **Les voix sont moyennées** : en ajouter ne rend pas l'effet plus fort. En stéréo, la modulation du canal droit est décalée d'un quart de tour : l'image s'élargit (deux canaux identiques en entrée ne le sont plus en sortie).
+- **Flanger** : une seule copie, très courte (0,3 à 10 ms), réinjectée avec `Feedback`. C'est un filtre en peigne qui balaie le spectre. Un retard de τ crée des creux à `(k + ½)/τ` : à `Mix = 1`, sans modulation ni rétroaction, un son à `1/(2τ)` est supprimé de plus de 30 dB et un son à `1/τ` est doublé (+6,02 dB, mesuré). La rétroaction approfondit le peigne et ajoute de la résonance ; son signe décale les creux et les pics. La réponse à une impulsion décroît jusqu'à zéro exact pour `Feedback = ±0,95`.
+- **Interpolation de Hermite à quatre points** (Catmull-Rom). Un retard qui varie de moins d'un échantillon fait changer la fraction de lecture à chaque trame ; une interpolation linéaire ferait osciller le niveau des aigus (jusqu'à 1,5 dB à 8 kHz, un « gargouillis »). Mesuré sur toutes les fractions : écart de niveau de 0,02 dB à 4 kHz (0,36 dB en linéaire) et de 0,31 dB à 8 kHz (1,49 dB en linéaire).
+- **La hauteur oscille** : le retard qui varie fait varier la fréquence de `2π × RateHz × DepthMs` en valeur relative. Mesuré sur un 1 kHz (par les passages à zéro) avec 1 ms de profondeur à 2 Hz : écart de 12,59 Hz pour 12,57 Hz attendus, fréquence moyenne 1 000,08 Hz (la hauteur moyenne ne bouge pas), et écart nul à profondeur nulle.
+- Un plafond doux (genou à 0,8) arrondit les pics. Les valeurs sont ramenées dans leurs bornes (NaN compte pour la valeur par défaut). Le retard minimal est de 2 échantillons même à basse fréquence d'échantillonnage. Sans effet si `Mix` est nul ou `sampleRate <= 0`.
+- **Mesuré avec `-fx chorus`** (défauts : 18 ms, ±3 ms, 0,8 Hz, 3 voix, mélange 0,5) sur les trois morceaux de `testdata/` : sonie intégrée +0,6 / +0,4 / +0,1 LU (calme / moyen / très fort), plage de sonie −0,1 / −0,4 / −0,2 LU ; coût : 231 s de stéréo en 1,7 s. **Avec `-fx flanger`** (défauts : 2 ms, ±1,5 ms, 0,25 Hz, rétroaction 0,5, mélange 0,5) : sonie +0,6 / +1,0 / +1,4 LU, plage de sonie −1,1 / +0,6 / +0,3 LU ; coût : 0,95 s. Le peigne du flanger et sa rétroaction ajoutent de l'énergie.
+
 ### Delay (écho)
 
 ```go
@@ -769,6 +802,8 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 | `parcomp` | `threshold` (−30), `ratio` (8), `attack` (ms, 10), `release` (ms, 120), `makeup` (dB, 16), `mix` (0,3) | compression parallèle |
 | `deess` | `freq` (5000), `threshold` (dBFS, −30), `ratio` (4) | de-esser : atténue les sifflantes au-dessus du seuil |
 | `exciter` | `freq` (3000), `amount` (0,3), `drive` (dB, 20), `warmth` (0) | harmoniques ajoutées aux aigus forts |
+| `chorus` | `delay` (ms, 18), `depth` (ms, 3), `rate` (Hz, 0,8), `voices` (3), `mix` (0,5) | chorus : voix retardées modulées |
+| `flanger` | `delay` (ms, 2), `depth` (ms, 1,5), `rate` (Hz, 0,25), `feedback` (0,5), `mix` (0,5) | flanger : peigne qui balaie, avec rétroaction |
 | `delay` | `time` (ms, 350), `feedback` (0,4), `mix` (0,3), `damping` (Hz, 0 = aucun), `pingpong` (0 ou 1) | échos, avec ping-pong stéréo |
 | `reverb` | `room` (0,5), `damping` (0,5), `width` (1), `predelay` (ms, 0), `mix` (0,25) | réverbération (Freeverb), queue coupée à la fin du flux |
 | `transient` | `attack`, `sustain` (de −1 à 1, défaut 0) | renforçateur de transitoires |
@@ -888,6 +923,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `parallel_test.go` | identité (mix nul, NaN, négatif, compresseur sans effet, seuil NaN, fréquence nulle) ; `Mix = 1` égal au compresseur seul, `Mix = 0,5` égal à la moyenne à 1 LSB ; passage faible relevé de plus de 3 dB de plus que le fort, queue d'un son relevée de plus de 4 dB de plus que son attaque ; détection liée stéréo ; silence exact ; `Mix` ramené dans [0, 1] ; lecture fragmentée |
 | `deesser_test.go` | identité (rapport ≤ 1 ou NaN, séparation à Nyquist ou NaN, seuil NaN, fréquence nulle) ; sifflante réduite de plus de 6 dB sans toucher une note de 500 Hz avant, pendant et après ; 7 kHz sous le seuil à ±0,3 dB ; rapport et seuil réglant la réduction ; séparation au-dessus de la sifflante ; défaut de 5 kHz ; détection liée stéréo ; lecture fragmentée |
 | `exciter_test.go` | identité (quantité nulle, NaN, négative, Nyquist) ; harmoniques au-dessus de la séparation (3ᵉ toujours, 2ᵉ seulement avec `Warmth`) et note de 200 Hz intacte ; **aucun filtre en peigne** (balayage de 15 fréquences, 5 réglages, 3 niveaux : transparent à −55 dBFS, ±1,8 dB à −20 dBFS) ; repliement sous −30 dBc ; canal silencieux, silence exact, aucun écrêtage ; bornes ; lecture fragmentée |
+| `chorus_test.go` | identité (chorus et flanger, mix nul / NaN / négatif, fréquence nulle) ; lecture fractionnaire exacte aux retards entiers, niveau des aigus tenu à ±0,5 dB à 8 kHz et Hermite au moins deux fois meilleur que le linéaire ; **écart de fréquence mesuré par les passages à zéro** (valeur attendue à 12 % près, fréquence moyenne inchangée, vitesse de modulation, écart nul à profondeur nulle) ; creux et pic du peigne du flanger (> 30 dB, +6,02 dB) ; réponse à une impulsion décroissante jusqu'à zéro exact avec rétroaction ±0,95 ; voix moyennées, image stéréo élargie, niveau voisin du sec ; bornes, silence exact, lecture fragmentée, aucun écrêtage, basse fréquence d'échantillonnage |
 | `delay_test.go` | identité (mix nul, NaN, négatif, fréquence nulle) ; échos aux trames exactes avec amplitude `Mix × Feedback^(k−1)` et rien ailleurs (3 réglages) ; canaux indépendants (canal silencieux exact) ; ping-pong aux trames exactes, ignoré en mono et à 3 canaux ; amortissement mesuré à 1 dB près sur les échos 2 et 3 ; bornes ; silence exact ; lecture fragmentée ; état minuscule ramené à zéro après 60 s |
 | `reverb_test.go` | identité (mix nul, NaN, négatif, fréquence nulle) ; durée de la queue croissante avec la taille de la pièce (RT60 par intégrale de Schroeder, sans dépendre des longueurs exactes) ; amortissement qui raccourcit les aigus de plus de 6 dB ; niveau du mouillé constant à ±1,5 dB sur bruit blanc pour cinq réglages ; retard préalable respecté ; largeur 0 (canaux identiques) et 1 ; silence exact, queue qui s'éteint à zéro exact et aucun état minuscule non nul ; RT60 voisin à 44,1 / 48 / 96 kHz ; mélange à puissance constante et volume stable ; aucun écrêtage ; bornes ; mono, stéréo, 3 canaux et lecture fragmentée |
 | `transient_test.go` | sans réglage / NaN / fréquence nulle : flux identique ; **sons stables intacts** (5 fréquences de 40 Hz à 8 kHz × 2 niveaux × 4 réglages extrêmes : ±0,2 dB et distorsion < −45 dB) ; attaque et tenue agissant chacune sur sa partie (début ou queue) et croissant avec le réglage ; indépendance du niveau ; détection liée stéréo ; bruit sous −70 dBFS et silence intacts ; aucun écrêtage ; réglages ramenés dans [−1, 1] ; lecture fragmentée ; facteur de crête d'une boucle de batterie |
@@ -896,7 +932,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `ab_test.go` | niveau efficace (sinus, silence numérique ignoré, paramètres invalides), gains qui égalisent les sonies sans jamais relever (traité plus fort, original plus fort, égaux, silence), sonie et non niveau efficace (basse contre 3 kHz), repli sur le niveau efficace sous 400 ms, `ApplyGain` (identité à 0 dB, −6 dB, écrêtage, copie, octet isolé), segments purs hors fondu, fondu linéaire monotone dans les deux sens, deux flux identiques bit à bit, entrelacement stéréo, longueur et paramètres invalides |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
-| `cmd/audioprofile/fx_test.go` | `-fx delay` (écho à l'instant demandé, mix 0 identique, pingpong 0 ou 1 seulement, bornes), `-fx crossfeed` (centre identique, fuite à droite, mono, bornes), `-fx notch` (50 Hz supprimé, 1 kHz intact, deux notch de suite, bornes), `-fx gate` (fort intact, faible réduit, ratio 1 identique, bornes), `-fx parcomp` (mix 0 identique, flux modifié, toutes les bornes), `-fx deess` et `-fx exciter` (réduction mesurée, sous le seuil, identité à ratio 1 / amount 0, toutes les bornes, chaîne complète avec un profil), `-fx reverb` (queue après le son, mix 0 identique, défaut, bornes, effets chaînés et nom en `-ab`), `-fx transient` (identité sans réglage, attaque mesurée, bornes), `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
+| `cmd/audioprofile/fx_test.go` | `-fx chorus` et `-fx flanger` (modifié, mix 0 identique, bornes, depth <= delay), `-fx delay` (écho à l'instant demandé, mix 0 identique, pingpong 0 ou 1 seulement, bornes), `-fx crossfeed` (centre identique, fuite à droite, mono, bornes), `-fx notch` (50 Hz supprimé, 1 kHz intact, deux notch de suite, bornes), `-fx gate` (fort intact, faible réduit, ratio 1 identique, bornes), `-fx parcomp` (mix 0 identique, flux modifié, toutes les bornes), `-fx deess` et `-fx exciter` (réduction mesurée, sous le seuil, identité à ratio 1 / amount 0, toutes les bornes, chaîne complète avec un profil), `-fx reverb` (queue après le son, mix 0 identique, défaut, bornes, effets chaînés et nom en `-ab`), `-fx transient` (identité sans réglage, attaque mesurée, bornes), `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
 | `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, annonce de la source en cours à l'instant et juste avant son segment, annonces retardées dans l'ordre, pas de couleur hors terminal, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, `-target-lufs` (−14 / −23 / −30 mesurés sur la sortie, après un profil, avec `-loudness`, cible inatteignable, silence, toutes les erreurs d'options), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues

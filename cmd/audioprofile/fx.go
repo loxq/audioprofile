@@ -88,6 +88,69 @@ var fxDefs = []fxDef{
 		},
 	},
 	{
+		name: "chorus",
+		doc:  "chorus : plusieurs copies légèrement retardées dont le retard oscille (épaissit, élargit en stéréo)",
+		params: []fxParam{
+			{"delay", 18, false, "retard moyen en ms, de 1 à 50"},
+			{"depth", 3, false, "amplitude de la modulation en ms, de 0,01 à 49,5 (jamais plus que delay - 0,5)"},
+			{"rate", 0.8, false, "vitesse de la modulation en Hz, de 0,05 à 10"},
+			{"voices", 3, false, "nombre de voix, de 1 à 6"},
+			{"mix", 0.5, false, "niveau des voix, de 0 (sans effet) à 1"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			for _, c := range []struct {
+				key    string
+				lo, hi float64
+			}{{"delay", 1, 50}, {"depth", 0.01, 49.5}, {"rate", 0.05, 10}, {"voices", 1, 6}, {"mix", 0, 1}} {
+				if v[c.key] < c.lo || v[c.key] > c.hi {
+					return fmt.Errorf("%s doit être dans [%g, %g] (reçu %g)", c.key, c.lo, c.hi, v[c.key])
+				}
+			}
+			if v["voices"] != math.Trunc(v["voices"]) {
+				return fmt.Errorf("voices doit être un entier (reçu %g)", v["voices"])
+			}
+			if v["depth"] > v["delay"]-0.5 {
+				return fmt.Errorf("depth (%g) ne doit pas dépasser delay - 0,5 (%g)", v["depth"], v["delay"]-0.5)
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.Chorus(src, rate, channels, audioprofile.ChorusSettings{DelayMs: v["delay"], DepthMs: v["depth"], RateHz: v["rate"], Voices: int(v["voices"]), Mix: v["mix"]})
+			}
+		},
+	},
+	{
+		name: "flanger",
+		doc:  "flanger : une copie très courte dont le retard oscille, avec rétroaction (le « jet d'avion »)",
+		params: []fxParam{
+			{"delay", 2, false, "retard moyen en ms, de 0,3 à 10"},
+			{"depth", 1.5, false, "amplitude de la modulation en ms, de 0,01 à 9,8 (jamais plus que delay - 0,2)"},
+			{"rate", 0.25, false, "vitesse de la modulation en Hz, de 0,05 à 10"},
+			{"feedback", 0.5, false, "rétroaction, de -0,95 à 0,95"},
+			{"mix", 0.5, false, "niveau du signal retardé, de 0 (sans effet) à 1"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			for _, c := range []struct {
+				key    string
+				lo, hi float64
+			}{{"delay", 0.3, 10}, {"depth", 0.01, 9.8}, {"rate", 0.05, 10}, {"feedback", -0.95, 0.95}, {"mix", 0, 1}} {
+				if v[c.key] < c.lo || v[c.key] > c.hi {
+					return fmt.Errorf("%s doit être dans [%g, %g] (reçu %g)", c.key, c.lo, c.hi, v[c.key])
+				}
+			}
+			if v["depth"] > v["delay"]-0.2 {
+				return fmt.Errorf("depth (%g) ne doit pas dépasser delay - 0,2 (%g)", v["depth"], v["delay"]-0.2)
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.Flanger(src, rate, channels, audioprofile.FlangerSettings{DelayMs: v["delay"], DepthMs: v["depth"], RateHz: v["rate"], Feedback: v["feedback"], Mix: v["mix"]})
+			}
+		},
+	},
+	{
 		name: "delay",
 		doc:  "delay (écho) : échos du signal, avec rétroaction, amortissement des aigus et ping-pong stéréo ; la queue est coupée à la fin du flux",
 		params: []fxParam{
