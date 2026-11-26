@@ -23,6 +23,8 @@ const (
 	Peaking                   // cloche centrée sur FreqHz
 	HighShelf                 // renforce/atténue tout ce qui est au-dessus de FreqHz
 	Gain                      // gain global sur tout le spectre (FreqHz et Q ignorés)
+	HighPass                  // passe-haut de Butterworth : coupe sous FreqHz (GainDB ignoré ; voir Order)
+	LowPass                   // passe-bas de Butterworth : coupe au-dessus de FreqHz (GainDB ignoré ; voir Order)
 )
 
 // Band décrit une bande d'un égaliseur paramétrique.
@@ -31,6 +33,7 @@ type Band struct {
 	FreqHz float64 // fréquence de coupure (shelf) ou centrale (peaking)
 	GainDB float64 // gain en dB (positif = renforcé), ramené dans [-24, +24]
 	Q      float64 // facteur de qualité ; <= 0 → 1/√2. Plus Q est grand, plus la bande est étroite
+	Order  int     // HighPass et LowPass seulement : ordre du filtre, de 1 à 8 (6 dB par octave et par ordre) ; <= 0 → 2
 }
 
 // Equalizer renvoie un flux PCM (s16le, entrelacé) auquel les bandes sont
@@ -41,7 +44,8 @@ type Band struct {
 //   - channels   : nombre de canaux (1 = mono, 2 = stéréo...)
 //   - bands      : bandes à appliquer
 //
-// Les bandes sans effet (gain nul, ou fréquence <= 0 ou >= Nyquist hors type Gain) sont ignorées.
+// Les bandes sans effet (gain nul, ou fréquence <= 0 ou >= Nyquist hors type Gain) sont ignorées ;
+// pour HighPass et LowPass, le gain n'a pas de sens et seule la fréquence compte.
 // S'il n'en reste aucune, ou si sampleRate <= 0, le flux est renvoyé tel quel.
 func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader {
 	return newEqualizerReader(src, sampleRate, channels, bands, nil, nil)
@@ -117,6 +121,12 @@ func newChainReader(src io.Reader, sampleRate, channels int, c chain) io.Reader 
 func designBands(fs float64, bands []Band) []coeffs {
 	var coefs []coeffs
 	for _, b := range bands {
+		if b.Type == HighPass || b.Type == LowPass {
+			if b.FreqHz > 0 && b.FreqHz < fs/2 {
+				coefs = append(coefs, butterworth(fs, b.FreqHz, b.Q, b.Order, b.Type == HighPass)...)
+			}
+			continue
+		}
 		if b.GainDB == 0 || math.IsNaN(b.GainDB) {
 			continue
 		}
@@ -143,6 +153,65 @@ func designBands(fs float64, bands []Band) []coeffs {
 		}
 	}
 	return coefs
+}
+
+// butterworthMaxOrder est l'ordre maximal d'un filtre HighPass ou LowPass.
+const butterworthMaxOrder = 8
+
+// butterworth renvoie les sections d'un filtre de Butterworth passe-haut (high) ou passe-bas
+// d'ordre order (ramené dans [1, 8], 2 si <= 0), avec −3 dB à f0. L'ordre 2 utilise q
+// (<= 0 → 1/√2) ; les autres ordres imposent le Q de chaque section : Q_j = 1/(2·sin((2j−1)π/2n))
+// pour les paires de pôles, plus une section du premier ordre si l'ordre est impair.
+func butterworth(fs, f0, q float64, order int, high bool) []coeffs {
+	if order <= 0 {
+		order = 2
+	}
+	if order > butterworthMaxOrder {
+		order = butterworthMaxOrder
+	}
+	section := func(q float64) coeffs {
+		if high {
+			return highPass(fs, f0, q)
+		}
+		return lowPass(fs, f0, q)
+	}
+	if order == 2 {
+		if q <= 0 {
+			q = defaultQ
+		}
+		return []coeffs{section(math.Max(minQ, q))}
+	}
+	var out []coeffs
+	if order%2 == 1 {
+		out = append(out, onePole(fs, f0, high))
+	}
+	for j := 1; j <= order/2; j++ {
+		out = append(out, section(1/(2*math.Sin(float64(2*j-1)*math.Pi/float64(2*order)))))
+	}
+	return out
+}
+
+// onePole : filtre du premier ordre (6 dB par octave), par transformation bilinéaire.
+func onePole(fs, f0 float64, high bool) coeffs {
+	k := math.Tan(math.Pi * f0 / fs)
+	a1 := (k - 1) / (1 + k)
+	if high {
+		return coeffs{b0: 1 / (1 + k), b1: -1 / (1 + k), a1: a1}
+	}
+	return coeffs{b0: k / (1 + k), b1: k / (1 + k), a1: a1}
+}
+
+// HighPassFilter renvoie un flux PCM (s16le, entrelacé) dont les graves sous cutoffHz sont coupés
+// (filtre de Butterworth d'ordre order, de 1 à 8 ; 6 dB par octave et par ordre ; <= 0 → 2).
+// À la fréquence de coupure, le gain est de −3 dB. Une fréquence <= 0 ou >= Nyquist laisse le
+// flux tel quel.
+func HighPassFilter(src io.Reader, sampleRate, channels int, cutoffHz float64, order int) io.Reader {
+	return Equalizer(src, sampleRate, channels, []Band{{Type: HighPass, FreqHz: cutoffHz, Order: order}})
+}
+
+// LowPassFilter est le pendant de HighPassFilter : il coupe les aigus au-dessus de cutoffHz.
+func LowPassFilter(src io.Reader, sampleRate, channels int, cutoffHz float64, order int) io.Reader {
+	return Equalizer(src, sampleRate, channels, []Band{{Type: LowPass, FreqHz: cutoffHz, Order: order}})
 }
 
 // singleBand applique une seule bande dont le gain vaut intensity × maxGainDB,

@@ -50,7 +50,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		channels   = fs.Int("channels", 2, "nombre de canaux (doit correspondre à celui de ffmpeg)")
 		list       = fs.Bool("list", false, "affiche les profils disponibles et quitte")
 		listAmps   = fs.Bool("list-amps", false, "affiche les préréglages d'ampli disponibles et quitte")
+		listFX     = fs.Bool("list-fx", false, "affiche les effets de -fx et leurs paramètres, et quitte")
 	)
+	var fxs fxList
+	fs.Var(&fxs, "fx", "ajoute un effet après le profil ou l'ampli : nom ou nom:cle=valeur,cle=valeur (répétable, appliqués dans l'ordre ; voir -list-fx)")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, `Usage : audioprofile (-profile NOM | -amp NOM) [options] < entrée.raw > sortie.raw
 
@@ -61,6 +64,8 @@ et écrit le même format sur la sortie standard. Exemple :
     | audioprofile -profile rock \
     | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
 
+Effets              : -fx hpf:freq=80 -fx lpf:freq=12000,order=4 (après le profil ou l'ampli,
+                      dans l'ordre ; -list-fx pour la liste ; -profile devient facultatif)
 Profils d'égaliseur : -profile rock, pop, jazz, tube…
 Profils radio       : -profile radio-hits, radio-rock, radio-talk… (multibande, stéréo
                       élargie, limiteur à -1 dBFS : niveau ramené vers une valeur
@@ -92,6 +97,11 @@ Options :
 		return nil
 	}
 
+	if *listFX {
+		fmt.Fprint(stdout, fxListing())
+		return nil
+	}
+
 	if *listAmps {
 		for _, p := range audioprofile.TubeAmpPresets() {
 			fmt.Fprintln(stdout, p)
@@ -99,9 +109,17 @@ Options :
 		return nil
 	}
 
-	if *profile == "" && *amp == "" {
+	var effects []fxEffect
+	for _, spec := range fxs {
+		e, err := parseFX(spec)
+		if err != nil {
+			return err
+		}
+		effects = append(effects, e)
+	}
+	if *profile == "" && *amp == "" && len(effects) == 0 {
 		fs.Usage()
-		return errors.New("-profile ou -amp est obligatoire (profils : " + profileNames() + " ; amplis : " + ampNames() + ")")
+		return errors.New("-profile ou -amp est obligatoire, sauf si au moins un -fx est donné (profils : " + profileNames() + " ; amplis : " + ampNames() + " ; effets : " + fxNames() + ")")
 	}
 	if *profile != "" && *amp != "" {
 		return errors.New("-profile et -amp sont exclusifs : choisissez l'un ou l'autre")
@@ -146,8 +164,10 @@ Options :
 		if preset, ok = audioprofile.ParseTubeAmpPreset(*amp); !ok {
 			return fmt.Errorf("ampli inconnu %q (amplis : %s)", *amp, ampNames())
 		}
-	} else if p, ok = audioprofile.ParseProfile(*profile); !ok {
-		return fmt.Errorf("profil inconnu %q (profils : %s)", *profile, profileNames())
+	} else if *profile != "" {
+		if p, ok = audioprofile.ParseProfile(*profile); !ok {
+			return fmt.Errorf("profil inconnu %q (profils : %s)", *profile, profileNames())
+		}
 	}
 	if *rate <= 0 {
 		return fmt.Errorf("-rate doit être > 0 (reçu %d)", *rate)
@@ -158,6 +178,11 @@ Options :
 	if *intensity < 0 || *intensity > audioprofile.MaxIntensity {
 		return fmt.Errorf("-intensity doit être dans [0, %g] (reçu %g)", audioprofile.MaxIntensity, *intensity)
 	}
+	for _, e := range effects {
+		if err := e.validate(*rate, *channels); err != nil {
+			return err
+		}
+	}
 	if isTerminal(stdin) {
 		return errors.New("aucune donnée sur l'entrée standard : utilisez un pipe (ffmpeg ... - | audioprofile ...) ou une redirection (< fichier.raw)")
 	}
@@ -167,18 +192,32 @@ Options :
 
 	out := bufio.NewWriterSize(stdout, 64*1024)
 	process := func(src io.Reader) io.Reader {
-		if *amp != "" {
+		r := src
+		switch {
+		case *amp != "":
 			s := preset.Settings().Scaled(*intensity)
 			s.Cabinet = *cabinet
-			return audioprofile.TubeAmp(src, *rate, *channels, s)
+			r = audioprofile.TubeAmp(r, *rate, *channels, s)
+		case *profile != "":
+			r = audioprofile.ApplyProfile(r, *rate, *channels, p, *intensity)
 		}
-		return audioprofile.ApplyProfile(src, *rate, *channels, p, *intensity)
+		for _, e := range effects {
+			r = e.apply(r, *rate, *channels)
+		}
+		return r
 	}
 	if *ab {
-		label := *profile
-		if *amp != "" {
-			label = "ampli " + *amp
+		var parts []string
+		switch {
+		case *amp != "":
+			parts = append(parts, "ampli "+*amp)
+		case *profile != "":
+			parts = append(parts, *profile)
 		}
+		for _, e := range effects {
+			parts = append(parts, e.spec)
+		}
+		label := strings.Join(parts, " + ")
 		if err := runAB(out, stderr, stdin, process, *rate, *channels, *abSeconds, *abDelay, label, *loudness); err != nil {
 			return err
 		}

@@ -5,7 +5,7 @@ Bibliothèque Go (et petit outil en ligne de commande) pour donner une couleur �
 Ce que le paquet `audioprofile` propose :
 
 - `ApplyProfile` : applique un **profil prédéfini** (Rock, Pop, Classical, Jazz, HipHop, Electronic, Acoustic, Vocal, Tube, et les profils **radio** `radio-hits`, `radio-rock`, `radio-urban`, `radio-club`, `radio-talk`, `radio-gold`, `radio-natural`) avec une intensité réglable ;
-- `Equalizer` : **égaliseur paramétrique** à bandes libres (type, fréquence, gain en dB, Q) ;
+- `Equalizer` : **égaliseur paramétrique** à bandes libres (type, fréquence, gain en dB, Q), avec des **filtres passe-haut et passe-bas** de Butterworth (ordres 1 à 8, `HighPassFilter` et `LowPassFilter`) ;
 - `Compressor` : **compresseur de dynamique** (seuil, ratio, attaque, relâchement, genou, compensation) ;
 - `MultibandCompressor` : **compresseur multibande** (séparations de Linkwitz-Riley, un compresseur par bande) ;
 - `Limiter` : **limiteur de crête à anticipation** (plafond garanti, sortie recalée sur l'entrée) ;
@@ -187,10 +187,11 @@ La saturation ([saturation.go](saturation.go)) applique, sur le signal normalis�
 func Equalizer(src io.Reader, sampleRate, channels int, bands []Band) io.Reader
 
 type Band struct {
-	Type   BandType // LowShelf, Peaking, HighShelf ou Gain
-	FreqHz float64  // fréquence de coupure (shelf) ou centrale (peaking)
-	GainDB float64  // gain en dB, ramené dans [-24, +24]
+	Type   BandType // LowShelf, Peaking, HighShelf, Gain, HighPass ou LowPass
+	FreqHz float64  // fréquence de coupure (shelf, passe-haut, passe-bas) ou centrale (peaking)
+	GainDB float64  // gain en dB, ramené dans [-24, +24] (ignoré par HighPass et LowPass)
 	Q      float64  // facteur de qualité ; <= 0 → 1/√2
+	Order  int      // HighPass et LowPass : ordre du filtre, de 1 à 8 ; <= 0 → 2
 }
 ```
 
@@ -206,11 +207,25 @@ rock := []audioprofile.Band{
 io.Copy(out, audioprofile.Equalizer(in, 44100, 2, rock))
 ```
 
-- **Types** : `LowShelf` et `HighShelf` agissent sous / au-dessus de `FreqHz` ; `Peaking` est une cloche centrée sur `FreqHz` ; `Gain` est un gain global sur tout le spectre (`FreqHz` et `Q` sont ignorés).
+- **Types** : `LowShelf` et `HighShelf` agissent sous / au-dessus de `FreqHz` ; `Peaking` est une cloche centrée sur `FreqHz` ; `Gain` est un gain global sur tout le spectre (`FreqHz` et `Q` sont ignorés) ; `HighPass` et `LowPass` sont des filtres de coupure (voir ci-dessous).
 - **Q** : plus il est grand, plus la bande est étroite. Pour une cloche, le gain demandé est atteint exactement à la fréquence centrale quel que soit Q.
 - Les bandes sont appliquées dans l'ordre, en série, en une seule passe sur les échantillons.
-- Sont ignorées les bandes sans effet : gain nul ou NaN, ou (hors `Gain`) fréquence <= 0 ou >= Nyquist. S'il n'en reste aucune, le flux est renvoyé tel quel.
+- Sont ignorées les bandes sans effet : gain nul ou NaN (sauf pour `HighPass` et `LowPass`, qui n'ont pas de gain), ou (hors `Gain`) fréquence <= 0 ou >= Nyquist. S'il n'en reste aucune, le flux est renvoyé tel quel.
 - Filtres biquad en forme directe II transposée (formules du *RBJ Audio EQ Cookbook*).
+
+#### Filtres passe-haut et passe-bas
+
+```go
+func HighPassFilter(src io.Reader, sampleRate, channels int, cutoffHz float64, order int) io.Reader
+func LowPassFilter(src io.Reader, sampleRate, channels int, cutoffHz float64, order int) io.Reader
+```
+
+Filtres de **Butterworth** (réponse la plus plate possible en bande passante) : **−3 dB à la fréquence de coupure**, puis **6 dB par octave et par ordre**, de l'ordre 1 (6 dB/octave) à l'ordre 8 (48 dB/octave) ; `order <= 0` donne l'ordre 2 (12 dB/octave), et un ordre hors de [1, 8] est ramené dedans. Le passe-haut retire les grondements et le bruit de manipulation (par exemple 40–80 Hz), le passe-bas adoucit les aigus ou retire un sifflement.
+
+- Ils existent aussi comme types de bande (`HighPass`, `LowPass`) dans [`Equalizer`](#égaliseur-paramétrique) : `Band{Type: audioprofile.HighPass, FreqHz: 80, Order: 4}`. Le gain d'une telle bande est ignoré (y compris à 0, qui désactive les autres types).
+- À l'ordre 2, `Q` règle le filtre comme pour les autres bandes (`<= 0` → 1/√2, Butterworth) ; aux autres ordres, chaque section a le Q de Butterworth qui lui correspond (`1 / (2·sin((2j−1)π / 2n))`), et un ordre impair ajoute une section du premier ordre.
+- Une fréquence <= 0, NaN ou >= Nyquist laisse le flux tel quel.
+- À partir de l'ordre 8, l'atténuation à deux octaves dépasse 90 dB : elle tombe sous le plancher de quantification d'un flux 16 bits.
 
 ### Compresseur
 
@@ -491,12 +506,14 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 
 | Option        | Défaut  | Description                                                       |
 |---------------|---------|-------------------------------------------------------------------|
-| `-profile`    | —       | Profil à appliquer, y compris `radio-*` (`-profile` ou `-amp` est obligatoire) |
+| `-profile`    | —       | Profil à appliquer, y compris `radio-*` (`-profile` ou `-amp` est obligatoire, sauf avec `-fx`) |
 | `-amp`        | —       | Préréglage d'ampli à tubes : `clean`, `crunch` ou `lead` (exclusif avec `-profile`) |
 | `-cabinet`    | `false` | Avec `-amp` : ajoute la simulation de baffle (son étouffé sur un morceau complet) |
 | `-intensity`  | `1`     | Profil ou ampli : `0` = aucun effet, `1` = réglage complet, jusqu'à `3` pour l'exagérer |
 | `-target-lufs` | —      | Amène la sonie intégrée de la sortie à cette valeur (de −70 à 0 LUFS) ; lit tout le flux |
 | `-ceiling`    | `-1`    | Avec `-target-lufs` : plafond des crêtes d'échantillon, en dBFS (de −40 à 0) |
+| `-fx`         | —       | Ajoute un effet après le profil ou l'ampli (répétable ; voir [`-fx`](#ajouter-des-effets--fx)) |
+| `-list-fx`    | —       | Affiche les effets de `-fx` et leurs paramètres et quitte |
 | `-loudness`   | `false` | Affiche sur la sortie d'erreur la sonie (intégrée, plage, crête) de l'original et du traité |
 | `-ab`         | `false` | Alterne l'original (A) et le traité (B), à sonie égale |
 | `-ab-seconds` | `5`     | Avec `-ab` : durée de chaque segment, en secondes |
@@ -505,6 +522,25 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 | `-channels`   | `2`     | Nombre de canaux                                                  |
 | `-list`       | —       | Affiche les profils disponibles et quitte                         |
 | `-list-amps`  | —       | Affiche les préréglages d'ampli disponibles et quitte             |
+
+### Ajouter des effets (`-fx`)
+
+```sh
+# Un passe-haut à 80 Hz d'ordre 4 (24 dB/octave) seul, sans profil
+./audioprofile -fx hpf:freq=80,order=4 < musique.raw > sortie.raw
+
+# Après un profil, plusieurs effets, dans l'ordre : passe-haut puis passe-bas
+./audioprofile -profile rock -fx hpf:freq=60 -fx lpf:freq=14000,order=4 < musique.raw > sortie.raw
+```
+
+`-fx nom` ou `-fx nom:cle=valeur,cle=valeur` ajoute un effet **après le profil ou l'ampli**, dans l'ordre où les `-fx` apparaissent. L'option est répétable, et **`-profile` devient facultatif dès qu'un `-fx` est donné**. `./audioprofile -list-fx` affiche les effets, leurs paramètres et leurs valeurs par défaut.
+
+| Effet | Paramètres | Rôle |
+|-------|------------|------|
+| `hpf` | `freq` (Hz, obligatoire), `order` (1 à 8, défaut 2) | filtre passe-haut de Butterworth |
+| `lpf` | `freq` (Hz, obligatoire), `order` (1 à 8, défaut 2) | filtre passe-bas de Butterworth |
+
+L'analyse est stricte : un effet ou un paramètre inconnu (le message liste les valides), un paramètre obligatoire absent ou donné deux fois, une valeur qui n'est pas un nombre fini, ou une fréquence hors de `]0, rate/2[` sont des erreurs. Les effets sont dans la chaîne de traitement : `-ab`, `-loudness` et `-target-lufs` les entendent (avec `-ab`, le côté B est nommé d'après la chaîne : `traité (flat + lpf:freq=3000)`).
 
 ### Comparer à l'oreille (`-ab`)
 
@@ -609,10 +645,12 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `multiband_test.go` | somme des bandes plate à ±0,1 dB (4 bandes, de 20 Hz à 18 kHz, séparations comprises — un test de mutation sans la compensation passe-tout le fait échouer), bandes indépendantes (aigus intacts quand seules les basses sont compressées, contre −20 dB en large bande), compensation par bande, réglages invalides = identité, détection liée et canal silencieux exactement silencieux, longueur conservée, lecture fragmentée identique, mise à l'échelle par l'intensité |
 | `profiles_radio_test.go` | les 7 profils radio existent, noms et `ParseProfile`, constantes existantes inchangées, niveau à −18 dBFS dans la fourchette mesurée de chacun, aucune crête au-dessus du plafond de −1 dBFS (7 profils × 4 intensités × 7 fréquences, mono et stéréo, signal à −0,1 dBFS), identité à intensité 0 / négative / NaN, longueur conservée, profil sans égalisation (`radio-natural`) qui agit quand même, élargissement du côté/milieu à la largeur du profil à 3 kHz et pas à 60 Hz, image de `radio-talk` inchangée, dynamique non écrasée (écart faible/fort conservé), basse fréquence d'échantillonnage |
 | `loudness_test.go` | coefficients de la pondération K à 48 kHz égaux à la table de l'UIT-R BS.1770-4 (10⁻⁹), gain de +0,69 dB à 1 kHz (44,1 / 48 / 96 kHz), étalonnage (X dBFS stéréo → X LUFS, mono −3,01 dB, à 44,1 / 48 / 96 kHz), accord avec ffmpeg `ebur128` sur deux signaux (±0,1 LU et ±1 LU), doubles portes (calme, silence numérique, niveau à −8 LU retenu), plage de sonie (stable ≈ 0, deux niveaux ≈ 10 LU), cas non valables (silence, vide, 200 ms, paramètres) sans `-Inf` ni `NaN`, morceaux de toute taille (octet par octet, 3 octets, 4097 octets, octet isolé) identiques, plusieurs canaux |
+| `filters_test.go` | −3 dB à la coupure à tous les ordres (1 à 8, trois fréquences d'échantillonnage), pente de 6·n dB par octave contre la courbe de Butterworth, bande passante plate, Q respecté à l'ordre 2 et ordres hors bornes ramenés, gain ignoré (même à 0 ou NaN), fréquences invalides ignorées, mesure de bout en bout sur un flux, combinaison avec d'autres bandes et lecture fragmentée |
 | `normalize_test.go` | cible atteinte (monter, descendre, cas streaming ; ± 0,15 LU) avec plafond respecté et longueur conservée, baisse = simple gain (bit à bit), montée avec limiteur actif, cibles inatteignables (plafond trop bas, gain maximal, `MaxBoostDB`) avec raison et meilleur résultat sous le plafond, gains de plus de 24 dB répartis sur plusieurs bandes, idempotence, équilibre gauche/droite, silence / vide / 100 ms intacts, cibles et plafonds invalides (NaN, hors bornes) en erreur, entrée non modifiée |
 | `ab_test.go` | niveau efficace (sinus, silence numérique ignoré, paramètres invalides), gains qui égalisent les sonies sans jamais relever (traité plus fort, original plus fort, égaux, silence), sonie et non niveau efficace (basse contre 3 kHz), repli sur le niveau efficace sous 400 ms, `ApplyGain` (identité à 0 dB, −6 dB, écrêtage, copie, octet isolé), segments purs hors fondu, fondu linéaire monotone dans les deux sens, deux flux identiques bit à bit, entrelacement stéréo, longueur et paramètres invalides |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
+| `cmd/audioprofile/fx_test.go` | `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
 | `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, annonce de la source en cours à l'instant et juste avant son segment, annonces retardées dans l'ordre, pas de couleur hors terminal, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, `-target-lufs` (−14 / −23 / −30 mesurés sur la sortie, après un profil, avec `-loudness`, cible inatteignable, silence, toutes les erreurs d'options), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues

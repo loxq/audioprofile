@@ -1,0 +1,176 @@
+package main
+
+import (
+	"fmt"
+	"io"
+	"math"
+	"strconv"
+	"strings"
+
+	"github.com/loxq/audioprofile"
+)
+
+// Les effets de l'option -fx, appliqués après le profil ou l'ampli, dans l'ordre de la ligne de
+// commande : -fx nom ou -fx nom:cle=valeur,cle=valeur.
+
+// fxParam décrit un paramètre d'effet.
+type fxParam struct {
+	key      string
+	def      float64
+	required bool
+	doc      string
+}
+
+// fxDef décrit un effet de la liste.
+type fxDef struct {
+	name   string
+	doc    string
+	params []fxParam
+	// check valide les valeurs (toutes présentes : les défauts sont déjà remplis) pour une
+	// fréquence d'échantillonnage et un nombre de canaux donnés.
+	check func(v map[string]float64, rate, channels int) error
+	// build construit l'effet.
+	build func(v map[string]float64) func(src io.Reader, rate, channels int) io.Reader
+}
+
+// fxDefs est la liste des effets, dans l'ordre d'affichage de -list-fx.
+var fxDefs = []fxDef{
+	{
+		name:   "hpf",
+		doc:    "filtre passe-haut de Butterworth (−3 dB à freq, 6 dB par octave et par ordre)",
+		params: []fxParam{{"freq", 0, true, "fréquence de coupure en Hz"}, {"order", 2, false, "ordre du filtre, de 1 à 8"}},
+		check:  checkFilter,
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.HighPassFilter(src, rate, channels, v["freq"], int(v["order"]))
+			}
+		},
+	},
+	{
+		name:   "lpf",
+		doc:    "filtre passe-bas de Butterworth (−3 dB à freq, 6 dB par octave et par ordre)",
+		params: []fxParam{{"freq", 0, true, "fréquence de coupure en Hz"}, {"order", 2, false, "ordre du filtre, de 1 à 8"}},
+		check:  checkFilter,
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.LowPassFilter(src, rate, channels, v["freq"], int(v["order"]))
+			}
+		},
+	},
+}
+
+func checkFilter(v map[string]float64, rate, channels int) error {
+	if !(v["freq"] > 0) || v["freq"] >= float64(rate)/2 {
+		return fmt.Errorf("freq doit être dans ]0, %g[ Hz, la moitié de la fréquence d'échantillonnage (reçu %g)", float64(rate)/2, v["freq"])
+	}
+	if o := v["order"]; o != math.Trunc(o) || o < 1 || o > 8 {
+		return fmt.Errorf("order doit être un entier de 1 à 8 (reçu %g)", o)
+	}
+	return nil
+}
+
+// fxList reçoit les occurrences de -fx, dans l'ordre. L'analyse se fait après coup, pour ne
+// renvoyer qu'une erreur lisible.
+type fxList []string
+
+func (f *fxList) String() string     { return strings.Join(*f, " ") }
+func (f *fxList) Set(v string) error { *f = append(*f, v); return nil }
+
+// fxEffect est un effet analysé.
+type fxEffect struct {
+	spec string
+	def  *fxDef
+	vals map[string]float64
+}
+
+func fxNames() string {
+	var names []string
+	for _, d := range fxDefs {
+		names = append(names, d.name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// parseFX analyse « nom » ou « nom:cle=valeur,cle=valeur ».
+func parseFX(spec string) (fxEffect, error) {
+	spec = strings.TrimSpace(spec)
+	name, rest, hasParams := strings.Cut(spec, ":")
+	name = strings.ToLower(strings.TrimSpace(name))
+	var def *fxDef
+	for i := range fxDefs {
+		if fxDefs[i].name == name {
+			def = &fxDefs[i]
+		}
+	}
+	if def == nil {
+		return fxEffect{}, fmt.Errorf("-fx : effet inconnu %q (effets : %s)", name, fxNames())
+	}
+	keys := map[string]*fxParam{}
+	var valid []string
+	for i := range def.params {
+		keys[def.params[i].key] = &def.params[i]
+		valid = append(valid, def.params[i].key)
+	}
+	vals := map[string]float64{}
+	if hasParams && strings.TrimSpace(rest) != "" {
+		for _, kv := range strings.Split(rest, ",") {
+			k, v, ok := strings.Cut(kv, "=")
+			k = strings.ToLower(strings.TrimSpace(k))
+			if !ok {
+				return fxEffect{}, fmt.Errorf("-fx %s : %q n'est pas de la forme cle=valeur", name, strings.TrimSpace(kv))
+			}
+			if keys[k] == nil {
+				return fxEffect{}, fmt.Errorf("-fx %s : paramètre inconnu %q (paramètres : %s)", name, k, strings.Join(valid, ", "))
+			}
+			if _, dup := vals[k]; dup {
+				return fxEffect{}, fmt.Errorf("-fx %s : paramètre %q donné deux fois", name, k)
+			}
+			f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+				return fxEffect{}, fmt.Errorf("-fx %s : %s=%q n'est pas un nombre fini", name, k, strings.TrimSpace(v))
+			}
+			vals[k] = f
+		}
+	}
+	for _, p := range def.params {
+		if _, ok := vals[p.key]; ok {
+			continue
+		}
+		if p.required {
+			return fxEffect{}, fmt.Errorf("-fx %s : paramètre %q obligatoire (exemple : -fx %s:%s=...)", name, p.key, name, p.key)
+		}
+		vals[p.key] = p.def
+	}
+	return fxEffect{spec: spec, def: def, vals: vals}, nil
+}
+
+// validate vérifie les valeurs pour une fréquence d'échantillonnage et un nombre de canaux donnés.
+func (e fxEffect) validate(rate, channels int) error {
+	if e.def.check == nil {
+		return nil
+	}
+	if err := e.def.check(e.vals, rate, channels); err != nil {
+		return fmt.Errorf("-fx %s : %w", e.def.name, err)
+	}
+	return nil
+}
+
+func (e fxEffect) apply(src io.Reader, rate, channels int) io.Reader {
+	return e.def.build(e.vals)(src, rate, channels)
+}
+
+// fxListing décrit les effets, pour -list-fx.
+func fxListing() string {
+	var b strings.Builder
+	for _, d := range fxDefs {
+		fmt.Fprintf(&b, "%-10s %s\n", d.name, d.doc)
+		for _, p := range d.params {
+			req := fmt.Sprintf("défaut %g", p.def)
+			if p.required {
+				req = "obligatoire"
+			}
+			fmt.Fprintf(&b, "             %-10s %s (%s)\n", p.key, p.doc, req)
+		}
+	}
+	return b.String()
+}
