@@ -58,6 +58,61 @@ var fxDefs = []fxDef{
 		},
 	},
 	{
+		name: "deess",
+		doc:  "de-esser : atténue les sifflantes (au-dessus de freq) quand elles dépassent le seuil ; le seuil est absolu, à régler pour chaque source",
+		params: []fxParam{
+			{"freq", 5000, false, "fréquence de séparation en Hz : ce qui est au-dessus est surveillé"},
+			{"threshold", -30, false, "seuil en dBFS, de -80 à 0"},
+			{"ratio", 4, false, "rapport de compression de la bande haute, de 1 (sans effet) à 100"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			if !(v["freq"] > 0) || v["freq"] >= float64(rate)/2 {
+				return fmt.Errorf("freq doit être dans ]0, %g[ Hz (reçu %g)", float64(rate)/2, v["freq"])
+			}
+			if v["threshold"] < -80 || v["threshold"] > 0 {
+				return fmt.Errorf("threshold doit être dans [-80, 0] dBFS (reçu %g)", v["threshold"])
+			}
+			if v["ratio"] < 1 || v["ratio"] > 100 {
+				return fmt.Errorf("ratio doit être dans [1, 100] (reçu %g)", v["ratio"])
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.DeEsser(src, rate, channels, audioprofile.DeEsserSettings{FreqHz: v["freq"], ThresholdDB: v["threshold"], Ratio: v["ratio"]})
+			}
+		},
+	},
+	{
+		name: "exciter",
+		doc:  "exciter : ajoute des harmoniques aux aigus (au-dessus de freq) ; elles n'apparaissent que si les aigus sont assez forts, augmentez drive pour en avoir sur des aigus discrets",
+		params: []fxParam{
+			{"freq", 3000, false, "fréquence de séparation en Hz : seul ce qui est au-dessus est enrichi"},
+			{"amount", 0.3, false, "part d'harmoniques ajoutée, de 0 (sans effet) à 1"},
+			{"drive", 20, false, "gain poussé dans la saturation en dB, de 3 à 24"},
+			{"warmth", 0, false, "asymétrie, de 0 (harmoniques impaires) à 1 (paires en plus)"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			if !(v["freq"] > 0) || v["freq"] >= float64(rate)/2 {
+				return fmt.Errorf("freq doit être dans ]0, %g[ Hz (reçu %g)", float64(rate)/2, v["freq"])
+			}
+			for _, k := range []string{"amount", "warmth"} {
+				if v[k] < 0 || v[k] > 1 {
+					return fmt.Errorf("%s doit être dans [0, 1] (reçu %g)", k, v[k])
+				}
+			}
+			if v["drive"] < 3 || v["drive"] > 24 {
+				return fmt.Errorf("drive doit être dans [3, 24] dB (reçu %g)", v["drive"])
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.Exciter(src, rate, channels, audioprofile.ExciterSettings{FreqHz: v["freq"], Amount: v["amount"], DriveDB: v["drive"], Warmth: v["warmth"]})
+			}
+		},
+	},
+	{
 		name: "reverb",
 		doc:  "réverbération (Freeverb) : la queue est coupée à la fin du flux, ajoutez du silence pour la laisser mourir",
 		params: []fxParam{

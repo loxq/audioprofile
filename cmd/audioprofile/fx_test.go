@@ -246,3 +246,79 @@ func TestFXReverb(t *testing.T) {
 		t.Errorf("err=%v %q", err, errOut)
 	}
 }
+
+// -fx deess et -fx exciter : effets mesurés sur un aigu, identité à réglage nul, toutes les bornes.
+func TestFXDeEsserAndExciter(t *testing.T) {
+	// un sinus de 7 kHz à −12 dBFS (amplitude 8 000), stéréo
+	in := pcm(7000, 44100, 2)
+	level := func(out string) float64 {
+		o := samplesOf(out)
+		var e float64
+		for i := 2 * 22050; i < len(o); i += 2 {
+			e += float64(o[i]) * float64(o[i])
+		}
+		return 10 * math.Log10(e/float64(len(o)/4))
+	}
+	ref := level(string(in))
+	de, _, err := runCLI(t, in, "-fx", "deess:threshold=-30,ratio=8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := level(de) - ref; g > -6 {
+		t.Errorf("deess : %+.1f dB sur une sifflante forte, attendu < −6", g)
+	}
+	// sous le seuil : à ±0,3 dB
+	quiet := pcm(7000, 44100, 2)
+	qs := samplesOf(string(quiet))
+	for i := range qs {
+		qs[i] /= 60 // −47 dBFS
+	}
+	var qb []byte
+	for _, v := range qs {
+		qb = append(qb, byte(uint16(v)), byte(uint16(v)>>8))
+	}
+	qo, _, _ := runCLI(t, qb, "-fx", "deess:threshold=-30,ratio=8")
+	if g := level(qo) - level(string(qb)); math.Abs(g) > 0.3 {
+		t.Errorf("deess sous le seuil : %+.2f dB", g)
+	}
+	// ratio 1 : sans effet, flux identique
+	if same, _, err := runCLI(t, in, "-fx", "deess:ratio=1"); err != nil || same != string(in) {
+		t.Errorf("ratio 1 : le flux doit rester identique (err=%v)", err)
+	}
+	// exciter : amount 0 identique ; amount 1 modifie un aigu fort
+	if same, _, err := runCLI(t, in, "-fx", "exciter:amount=0"); err != nil || same != string(in) {
+		t.Errorf("amount 0 : le flux doit rester identique (err=%v)", err)
+	}
+	ex, _, err := runCLI(t, in, "-fx", "exciter:amount=1,drive=24,freq=2000")
+	if err != nil || ex == string(in) || len(ex) != len(in) {
+		t.Errorf("exciter : le flux doit être modifié (err=%v)", err)
+	}
+	for _, tc := range []struct{ args, want string }{
+		{"deess:freq=0", "freq doit être dans"},
+		{"deess:freq=30000", "freq doit être dans"},
+		{"deess:threshold=5", "threshold doit être dans [-80, 0]"},
+		{"deess:threshold=-100", "threshold doit être dans [-80, 0]"},
+		{"deess:ratio=0.5", "ratio doit être dans [1, 100]"},
+		{"deess:ratio=500", "ratio doit être dans [1, 100]"},
+		{"exciter:freq=-5", "freq doit être dans"},
+		{"exciter:amount=1.2", "amount doit être dans [0, 1]"},
+		{"exciter:warmth=-0.2", "warmth doit être dans [0, 1]"},
+		{"exciter:drive=1", "drive doit être dans [3, 24]"},
+		{"exciter:drive=40", "drive doit être dans [3, 24]"},
+		{"exciter:gain=3", `paramètre inconnu "gain"`},
+	} {
+		if _, _, err := runCLI(t, in, "-fx", tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("-fx %s : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
+	}
+	list, _, _ := runCLI(t, nil, "-list-fx")
+	for _, want := range []string{"deess", "exciter", "threshold", "ratio", "amount", "drive", "warmth"} {
+		if !strings.Contains(list, want) {
+			t.Errorf("%q absent de -list-fx", want)
+		}
+	}
+	// chaîne complète : tous les effets ensemble, dans l'ordre, avec un profil
+	if _, _, err := runCLI(t, in, "-profile", "radio-talk", "-fx", "hpf:freq=80", "-fx", "deess", "-fx", "exciter", "-fx", "transient:attack=0.3", "-fx", "reverb:mix=0.1"); err != nil {
+		t.Errorf("chaîne complète : %v", err)
+	}
+}
