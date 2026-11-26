@@ -88,6 +88,33 @@ var fxDefs = []fxDef{
 		},
 	},
 	{
+		name: "gate",
+		doc:  "gate / expandeur descendant : réduit les passages sous le seuil (bruit de fond entre les phrases ou les notes) ; ratio 100 = gate franc",
+		params: []fxParam{
+			{"threshold", -50, false, "seuil en dBFS, de -90 à 0 : en dessous, le signal est réduit"},
+			{"ratio", 4, false, "rapport d'expansion, de 1 (sans effet) à 100 (gate)"},
+			{"range", 30, false, "réduction maximale en dB, de 1 à 90"},
+			{"attack", 2, false, "ouverture en ms, de 0,05 à 500"},
+			{"release", 120, false, "fermeture en ms, de 1 à 5000"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			for _, c := range []struct {
+				key    string
+				lo, hi float64
+			}{{"threshold", -90, 0}, {"ratio", 1, 100}, {"range", 1, 90}, {"attack", 0.05, 500}, {"release", 1, 5000}} {
+				if v[c.key] < c.lo || v[c.key] > c.hi {
+					return fmt.Errorf("%s doit être dans [%g, %g] (reçu %g)", c.key, c.lo, c.hi, v[c.key])
+				}
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.Gate(src, rate, channels, audioprofile.GateSettings{ThresholdDB: v["threshold"], Ratio: v["ratio"], RangeDB: v["range"], AttackMs: v["attack"], ReleaseMs: v["release"]})
+			}
+		},
+	},
+	{
 		name: "deess",
 		doc:  "de-esser : atténue les sifflantes (au-dessus de freq) quand elles dépassent le seuil ; le seuil est absolu, à régler pour chaque source",
 		params: []fxParam{

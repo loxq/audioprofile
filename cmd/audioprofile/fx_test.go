@@ -350,3 +350,51 @@ func TestFXParallelCompression(t *testing.T) {
 		t.Error("parcomp absent de -list-fx")
 	}
 }
+
+// -fx gate : un signal fort passe, un signal faible est réduit, ratio 1 identique, bornes vérifiées.
+func TestFXGate(t *testing.T) {
+	const loud, quiet = 8000, 8000 / 316 // 8 000 (−12 dBFS) et −62 dBFS
+	level := func(amp float64) float64 {
+		in := make([]byte, 0, 4*44100)
+		for i := 0; i < 44100; i++ {
+			v := int16(amp * math.Sin(2*math.Pi*1000*float64(i)/44100))
+			in = append(in, byte(uint16(v)), byte(uint16(v)>>8), byte(uint16(v)), byte(uint16(v)>>8))
+		}
+		out, _, err := runCLI(t, in, "-fx", "gate:threshold=-45,ratio=50,range=30")
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, o := samplesOf(string(in)), samplesOf(out)
+		var ei, eo float64
+		for i := 2 * 22050; i < len(a); i += 2 {
+			ei += float64(a[i]) * float64(a[i])
+			eo += float64(o[i]) * float64(o[i])
+		}
+		return 10 * math.Log10(eo/ei)
+	}
+	if g := level(loud); math.Abs(g) > 0.1 {
+		t.Errorf("signal fort : %+.2f dB, attendu intact", g)
+	}
+	if g := level(quiet); g > -20 {
+		t.Errorf("signal faible : %+.1f dB, attendu une forte réduction", g)
+	}
+	in := pcm(1000, 20000, 2)
+	if same, _, err := runCLI(t, in, "-fx", "gate:ratio=1"); err != nil || same != string(in) {
+		t.Errorf("ratio 1 : le flux doit rester identique (err=%v)", err)
+	}
+	for _, tc := range []struct{ args, want string }{
+		{"gate:threshold=3", "threshold doit être dans [-90, 0]"},
+		{"gate:ratio=0.2", "ratio doit être dans [1, 100]"},
+		{"gate:range=0", "range doit être dans [1, 90]"},
+		{"gate:attack=0", "attack doit être dans [0.05, 500]"},
+		{"gate:release=0", "release doit être dans [1, 5000]"},
+		{"gate:hold=5", `paramètre inconnu "hold"`},
+	} {
+		if _, _, err := runCLI(t, in, "-fx", tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("-fx %s : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
+	}
+	if list, _, _ := runCLI(t, nil, "-list-fx"); !strings.Contains(list, "gate") {
+		t.Error("gate absent de -list-fx")
+	}
+}

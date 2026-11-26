@@ -7,6 +7,7 @@ Ce que le paquet `audioprofile` propose :
 - `ApplyProfile` : applique un **profil prédéfini** (Rock, Pop, Classical, Jazz, HipHop, Electronic, Acoustic, Vocal, Tube, et les profils **radio** `radio-hits`, `radio-rock`, `radio-urban`, `radio-club`, `radio-talk`, `radio-gold`, `radio-natural`) avec une intensité réglable ;
 - `Equalizer` : **égaliseur paramétrique** à bandes libres (type, fréquence, gain en dB, Q), avec des **filtres passe-haut et passe-bas** de Butterworth (ordres 1 à 8, `HighPassFilter` et `LowPassFilter`) ;
 - `Compressor` : **compresseur de dynamique** (seuil, ratio, attaque, relâchement, genou, compensation) ;
+- `Gate` : **gate / expandeur descendant** (réduit le bruit de fond sous un seuil) ;
 - `ParallelCompressor` : **compression parallèle** (un signal très comprimé mélangé au signal sec) ;
 - `MultibandCompressor` : **compresseur multibande** (séparations de Linkwitz-Riley, un compresseur par bande) ;
 - `Limiter` : **limiteur de crête à anticipation** (plafond garanti, sortie recalée sur l'entrée) ;
@@ -276,6 +277,30 @@ Limiteur de crête **à anticipation** : aucune crête d'échantillon ne dépass
 - Détection liée : le même gain pour tous les canaux.
 - Le plafond porte sur les valeurs d'échantillons, pas sur les crêtes inter-échantillons (*true peak*) : un convertisseur en aval peut en reconstruire qui dépassent de 1 à 2 dB. Prenez `-1` dBFS pour avoir de la marge.
 - Dans une chaîne de profil, le limiteur remplace le plafond doux : il est le dernier étage.
+
+### Gate / expandeur
+
+```go
+type GateSettings struct {
+	ThresholdDB float64 // seuil en dBFS : en dessous, le signal est réduit
+	Ratio       float64 // 2 = expandeur doux, 100 = gate franc ; <= 1 : sans effet
+	RangeDB     float64 // réduction maximale en dB (positive) ; <= 0 → 40
+	AttackMs    float64 // ouverture, en ms ; <= 0 → 2
+	ReleaseMs   float64 // fermeture, en ms ; <= 0 → 100
+}
+
+func Gate(src io.Reader, sampleRate, channels int, s GateSettings) io.Reader
+```
+
+Réduit les **passages faibles** : le bruit de fond entre les phrases, le souffle entre les notes. C'est l'inverse d'un compresseur : au-dessus du seuil rien ne change, en dessous le niveau chute `Ratio` fois plus vite qu'il ne baisse à l'entrée. Avec `Ratio = 2`, un passage 10 dB sous le seuil sort 10 dB plus bas (expandeur doux) ; avec un rapport élevé, il est réduit de `RangeDB` (gate).
+
+- **Courbe** : droite de pente `Ratio − 1` sous le seuil, raccordée sans saut par un genou quadratique de 6 dB, et réduction plafonnée à `RangeDB` (testée point par point, avec continuité sur tout l'axe).
+- **Détection** : crête du canal le plus fort, avec un détecteur qui monte en 0,2 ms et retombe en 30 ms (pour ne pas hacher les basses fréquences) ; le même gain s'applique à tous les canaux. La réduction est lissée : l'ouverture suit `AttackMs`, la fermeture `ReleaseMs` (la réduction atteint 86 % de la plage après deux temps de relâchement ; mesuré avec 80 ms de relâchement et une plage de 40 dB : −34 dB 0,25 s après la fin d'une salve).
+- **Mesuré** : un sinus de 40 Hz à 8 kHz au-dessus du seuil sort à ±0,1 dB (y compris les basses fréquences, où l'enveloppe ondule) ; 15 dB sous le seuil avec `Ratio = 2`, −15 dB ±2 ; un gate franc réduit de `RangeDB` ±3. Sur des salves à −20 dBFS séparées par un bruit de fond à −60 dBFS, le bruit est réduit de plus de 25 dB entre les salves et les salves passent à ±0,5 dB ; une ouverture de 0,5 ms laisse passer 36 dB de plus des 4 premières millisecondes d'une salve qu'une ouverture de 40 ms.
+- **Pas d'anticipation** : le tout début d'un son qui sort du silence peut être atténué pendant `AttackMs`. Le silence reste exactement du silence.
+- **Sur les morceaux de `testdata/`, il ne fait presque rien** (`-fx gate` aux défauts, −50 dBFS : sonie et plage de sonie inchangées, crête de 0,0 à 0,4 dB plus bas à cause du plafond doux des `-fx`) : ce sont des musiques continues, sans rien sous −40 dBFS. Il est pensé pour de la voix et des prises avec du bruit de fond, que je n'ai pas essayées.
+- **Coût** : 231 s de stéréo traitées en 0,7 s.
+- Sans effet (flux identique) si `Ratio <= 1` ou NaN, si le seuil est NaN, ou si `sampleRate <= 0`. Rapport et plage hors bornes sont ramenés dedans.
 
 ### Compression parallèle
 
@@ -671,6 +696,7 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 
 | Effet | Paramètres | Rôle |
 |-------|------------|------|
+| `gate` | `threshold` (−50), `ratio` (4), `range` (dB, 30), `attack` (ms, 2), `release` (ms, 120) | gate / expandeur descendant |
 | `parcomp` | `threshold` (−30), `ratio` (8), `attack` (ms, 10), `release` (ms, 120), `makeup` (dB, 16), `mix` (0,3) | compression parallèle |
 | `deess` | `freq` (5000), `threshold` (dBFS, −30), `ratio` (4) | de-esser : atténue les sifflantes au-dessus du seuil |
 | `exciter` | `freq` (3000), `amount` (0,3), `drive` (dB, 20), `warmth` (0) | harmoniques ajoutées aux aigus forts |
@@ -786,6 +812,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `multiband_test.go` | somme des bandes plate à ±0,1 dB (4 bandes, de 20 Hz à 18 kHz, séparations comprises — un test de mutation sans la compensation passe-tout le fait échouer), bandes indépendantes (aigus intacts quand seules les basses sont compressées, contre −20 dB en large bande), compensation par bande, réglages invalides = identité, détection liée et canal silencieux exactement silencieux, longueur conservée, lecture fragmentée identique, mise à l'échelle par l'intensité |
 | `profiles_radio_test.go` | les 7 profils radio existent, noms et `ParseProfile`, constantes existantes inchangées, niveau à −18 dBFS dans la fourchette mesurée de chacun, aucune crête au-dessus du plafond de −1 dBFS (7 profils × 4 intensités × 7 fréquences, mono et stéréo, signal à −0,1 dBFS), identité à intensité 0 / négative / NaN, longueur conservée, profil sans égalisation (`radio-natural`) qui agit quand même, élargissement du côté/milieu à la largeur du profil à 3 kHz et pas à 60 Hz, image de `radio-talk` inchangée, dynamique non écrasée (écart faible/fort conservé), basse fréquence d'échantillonnage |
 | `loudness_test.go` | coefficients de la pondération K à 48 kHz égaux à la table de l'UIT-R BS.1770-4 (10⁻⁹), gain de +0,69 dB à 1 kHz (44,1 / 48 / 96 kHz), étalonnage (X dBFS stéréo → X LUFS, mono −3,01 dB, à 44,1 / 48 / 96 kHz), accord avec ffmpeg `ebur128` sur deux signaux (±0,1 LU et ±1 LU), doubles portes (calme, silence numérique, niveau à −8 LU retenu), plage de sonie (stable ≈ 0, deux niveaux ≈ 10 LU), cas non valables (silence, vide, 200 ms, paramètres) sans `-Inf` ni `NaN`, morceaux de toute taille (octet par octet, 3 octets, 4097 octets, octet isolé) identiques, plusieurs canaux |
+| `gate_test.go` | identité (rapport ≤ 1, NaN, seuil NaN, plage NaN, fréquence nulle) ; courbe statique point par point, continuité sur tout l'axe, plafond `RangeDB` ; sons stables au-dessus du seuil intacts (5 fréquences de 40 Hz à 8 kHz × 2 niveaux) ; réduction sous le seuil (expandeur et gate) ; salves au-dessus d'un bruit de fond (bruit réduit de plus de 25 dB, salves intactes, ouverture courte contre longue) ; détection liée stéréo ; silence exact ; bornes ; lecture fragmentée |
 | `parallel_test.go` | identité (mix nul, NaN, négatif, compresseur sans effet, seuil NaN, fréquence nulle) ; `Mix = 1` égal au compresseur seul, `Mix = 0,5` égal à la moyenne à 1 LSB ; passage faible relevé de plus de 3 dB de plus que le fort, queue d'un son relevée de plus de 4 dB de plus que son attaque ; détection liée stéréo ; silence exact ; `Mix` ramené dans [0, 1] ; lecture fragmentée |
 | `deesser_test.go` | identité (rapport ≤ 1 ou NaN, séparation à Nyquist ou NaN, seuil NaN, fréquence nulle) ; sifflante réduite de plus de 6 dB sans toucher une note de 500 Hz avant, pendant et après ; 7 kHz sous le seuil à ±0,3 dB ; rapport et seuil réglant la réduction ; séparation au-dessus de la sifflante ; défaut de 5 kHz ; détection liée stéréo ; lecture fragmentée |
 | `exciter_test.go` | identité (quantité nulle, NaN, négative, Nyquist) ; harmoniques au-dessus de la séparation (3ᵉ toujours, 2ᵉ seulement avec `Warmth`) et note de 200 Hz intacte ; **aucun filtre en peigne** (balayage de 15 fréquences, 5 réglages, 3 niveaux : transparent à −55 dBFS, ±1,8 dB à −20 dBFS) ; repliement sous −30 dBc ; canal silencieux, silence exact, aucun écrêtage ; bornes ; lecture fragmentée |
@@ -796,7 +823,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `ab_test.go` | niveau efficace (sinus, silence numérique ignoré, paramètres invalides), gains qui égalisent les sonies sans jamais relever (traité plus fort, original plus fort, égaux, silence), sonie et non niveau efficace (basse contre 3 kHz), repli sur le niveau efficace sous 400 ms, `ApplyGain` (identité à 0 dB, −6 dB, écrêtage, copie, octet isolé), segments purs hors fondu, fondu linéaire monotone dans les deux sens, deux flux identiques bit à bit, entrelacement stéréo, longueur et paramètres invalides |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
-| `cmd/audioprofile/fx_test.go` | `-fx parcomp` (mix 0 identique, flux modifié, toutes les bornes), `-fx deess` et `-fx exciter` (réduction mesurée, sous le seuil, identité à ratio 1 / amount 0, toutes les bornes, chaîne complète avec un profil), `-fx reverb` (queue après le son, mix 0 identique, défaut, bornes, effets chaînés et nom en `-ab`), `-fx transient` (identité sans réglage, attaque mesurée, bornes), `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
+| `cmd/audioprofile/fx_test.go` | `-fx gate` (fort intact, faible réduit, ratio 1 identique, bornes), `-fx parcomp` (mix 0 identique, flux modifié, toutes les bornes), `-fx deess` et `-fx exciter` (réduction mesurée, sous le seuil, identité à ratio 1 / amount 0, toutes les bornes, chaîne complète avec un profil), `-fx reverb` (queue après le son, mix 0 identique, défaut, bornes, effets chaînés et nom en `-ab`), `-fx transient` (identité sans réglage, attaque mesurée, bornes), `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
 | `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, annonce de la source en cours à l'instant et juste avant son segment, annonces retardées dans l'ordre, pas de couleur hors terminal, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, `-target-lufs` (−14 / −23 / −30 mesurés sur la sortie, après un profil, avec `-loudness`, cible inatteignable, silence, toutes les erreurs d'options), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues
