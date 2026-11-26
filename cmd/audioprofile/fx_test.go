@@ -427,3 +427,54 @@ func TestFXNotch(t *testing.T) {
 		t.Error("notch absent de -list-fx")
 	}
 }
+
+// -fx crossfeed : un son au centre est identique, un son à gauche fuit à droite aux graves, bornes vérifiées.
+func TestFXCrossfeed(t *testing.T) {
+	centered := pcm(100, 44100, 2) // même signal à gauche et à droite
+	same, _, err := runCLI(t, centered, "-fx", "crossfeed")
+	if err != nil || same != string(centered) {
+		t.Errorf("son au centre : le flux doit rester identique (err=%v)", err)
+	}
+	// 100 Hz à gauche seulement, silence à droite
+	var left []byte
+	for i := 0; i < 44100; i++ {
+		v := int16(8000 * math.Sin(2*math.Pi*100*float64(i)/44100))
+		left = append(left, byte(uint16(v)), byte(uint16(v)>>8), 0, 0)
+	}
+	out, _, err := runCLI(t, left, "-fx", "crossfeed:strength=0.6")
+	if err != nil || len(out) != len(left) {
+		t.Fatalf("err=%v longueur %d/%d", err, len(out), len(left))
+	}
+	var el, er float64
+	for i, v := range samplesOf(out) {
+		if i < 2*22050 {
+			continue
+		}
+		if i%2 == 0 {
+			el += float64(v) * float64(v)
+		} else {
+			er += float64(v) * float64(v)
+		}
+	}
+	if g := 10 * math.Log10(er/el); g > -6 || g < -9 { // droite : k = 0,3 de la gauche ; gauche : 1 − k = 0,7 : 0,3 / 0,7 = −7,4 dB
+		t.Errorf("fuite à droite : %.1f dB par rapport à la gauche, attendu ≈ −7,4", g)
+	}
+	// mono : sans effet
+	if mono, _, err := runCLI(t, pcm(100, 20000, 1), "-channels", "1", "-fx", "crossfeed"); err != nil || len(mono) != 2*20000 {
+		t.Errorf("mono : err=%v", err)
+	}
+	for _, tc := range []struct{ args, want string }{
+		{"crossfeed:strength=1.5", "strength doit être dans [0, 1]"},
+		{"crossfeed:cutoff=0", "cutoff doit être dans"},
+		{"crossfeed:cutoff=22050", "cutoff doit être dans"},
+		{"crossfeed:delay=2", "delay doit être dans [0, 1] ms"},
+		{"crossfeed:level=3", `paramètre inconnu "level"`},
+	} {
+		if _, _, err := runCLI(t, centered, "-fx", tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("-fx %s : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
+	}
+	if list, _, _ := runCLI(t, nil, "-list-fx"); !strings.Contains(list, "crossfeed") {
+		t.Error("crossfeed absent de -list-fx")
+	}
+}

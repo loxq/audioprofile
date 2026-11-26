@@ -7,6 +7,7 @@ Ce que le paquet `audioprofile` propose :
 - `ApplyProfile` : applique un **profil prédéfini** (Rock, Pop, Classical, Jazz, HipHop, Electronic, Acoustic, Vocal, Tube, et les profils **radio** `radio-hits`, `radio-rock`, `radio-urban`, `radio-club`, `radio-talk`, `radio-gold`, `radio-natural`) avec une intensité réglable ;
 - `Equalizer` : **égaliseur paramétrique** à bandes libres (type, fréquence, gain en dB, Q), avec des **filtres passe-haut et passe-bas** de Butterworth (ordres 1 à 8, `HighPassFilter` et `LowPassFilter`) ;
 - `Compressor` : **compresseur de dynamique** (seuil, ratio, attaque, relâchement, genou, compensation) ;
+- `Crossfeed` : **crossfeed pour casque** (mélange les graves des deux canaux, milieu conservé) ;
 - `Gate` : **gate / expandeur descendant** (réduit le bruit de fond sous un seuil) ;
 - `ParallelCompressor` : **compression parallèle** (un signal très comprimé mélangé au signal sec) ;
 - `MultibandCompressor` : **compresseur multibande** (séparations de Linkwitz-Riley, un compresseur par bande) ;
@@ -606,6 +607,33 @@ Accentue ou adoucit **l'attaque** des sons (l'impact d'une grosse caisse, d'une 
 
 L'effet n'est net que sur le morceau calme : sur les deux autres, dont les crêtes sont déjà au plafond, la crête ne peut plus monter et le gain d'attaque est absorbé par le plafond doux (la crête reste à −0,1 / 0,0 dBFS). La plage de sonie (LRA), qui mesure des fenêtres de 3 s, ne bouge presque pas (de −0,9 à +0,6 LU) : ce n'est pas la bonne mesure pour une dynamique à l'échelle de la note, d'où le PLR et le facteur de crête (testé sur une boucle de batterie synthétique : 14,3 dB → 20,3 dB à `Attack = 0,8` et 13,4 dB à `−0,8`).
 
+### Crossfeed pour casque
+
+```go
+type CrossfeedSettings struct {
+	Strength float64 // 0 (sans effet) à 1 (graves presque ramenés au centre)
+	CutoffHz float64 // en dessous, les canaux se mélangent ; <= 0 → 700
+	DelayMs  float64 // retard du signal croisé, de 0 à 1 ms ; 0 par défaut
+}
+
+func Crossfeed(src io.Reader, sampleRate, channels int, s CrossfeedSettings) io.Reader
+```
+
+Adapte un mixage stéréo à l'écoute **au casque** : il mélange un peu de chaque canal dans l'autre, comme le fait l'air entre deux enceintes, ce qui réduit la fatigue d'écoute d'un mixage qui isole trop les deux oreilles (une guitare à gauche, une basse à droite). C'est l'inverse de [`StereoWidth`](#élargisseur-stéréo), qui élargit l'image pour les enceintes.
+
+```
+G' = G + k × (PB(D) − PB(G))      D' = D + k × (PB(G) − PB(D))      avec k = Strength / 2
+```
+
+`PB` est un passe-bas du premier ordre à `CutoffHz`. En termes milieu / côté :
+
+- **le milieu (`G + D`) n'est jamais touché** : le résultat reste compatible mono, et un son au centre ressort **à l'identique, bit à bit** (testé) ;
+- **seul le côté (`G − D`) est réduit sous la coupure**, d'un facteur voisin de `1 − Strength` aux basses fréquences : `Strength = 0,6` réduit le côté de 7,5 dB à 100 Hz, `Strength = 1` de 17 dB (le déphasage du passe-bas empêche l'annulation exacte) ; les aigus ne bougent presque pas (côté à 2 kHz : −0,5 dB, à 8 kHz : −0,03 dB, à `Strength = 1`).
+- Un son entièrement à gauche fuit à droite aux graves seulement : −10,5 dB à 100 Hz et moins de −30 dB à 8 kHz pour `Strength = 0,6`.
+- **`DelayMs`** retarde le signal croisé (0,25 ms environ imite la différence de temps entre les deux oreilles) : plus de profondeur, mais les sons du centre sont colorés (2,4 dB au plus entre 300 Hz et 1 kHz à `Strength = 0,6`), et le milieu n'est alors plus rigoureusement préservé. 0 par défaut.
+- Seuls les flux stéréo (`channels = 2`) sont traités ; mono et plus de deux canaux sont renvoyés tels quels, de même que `Strength` nul ou NaN, `sampleRate <= 0` ou `CutoffHz >= Nyquist`. Les valeurs sont ramenées dans leurs bornes.
+- **Mesuré avec `-fx crossfeed`** (`Strength = 0,6`) sur les trois morceaux de `testdata/` (sonie du milieu et du côté, calculée sur `(G+D)/2` et `(G−D)/2`) : le milieu ne bouge pas (−24,3 / −16,8 / −11,1 LUFS avant et après) ; le côté baisse de 5,2 / 1,2 / 0,5 dB (calme / moyen / très fort). Le morceau calme est celui dont les graves sont les plus latéraux ; sur les deux autres, les graves sont déjà presque au centre et il y a peu à ramener.
+
 ### Élargisseur stéréo
 
 ```go
@@ -708,6 +736,7 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 
 | Effet | Paramètres | Rôle |
 |-------|------------|------|
+| `crossfeed` | `strength` (0,6), `cutoff` (Hz, 700), `delay` (ms, 0) | crossfeed pour casque (stéréo seulement) |
 | `notch` | `freq` (Hz, obligatoire), `q` (0,1 à 1000, défaut 10) | filtre coupe-bande étroit (ronflement du secteur) |
 | `gate` | `threshold` (−50), `ratio` (4), `range` (dB, 30), `attack` (ms, 2), `release` (ms, 120) | gate / expandeur descendant |
 | `parcomp` | `threshold` (−30), `ratio` (8), `attack` (ms, 10), `release` (ms, 120), `makeup` (dB, 16), `mix` (0,3) | compression parallèle |
@@ -825,6 +854,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `multiband_test.go` | somme des bandes plate à ±0,1 dB (4 bandes, de 20 Hz à 18 kHz, séparations comprises — un test de mutation sans la compensation passe-tout le fait échouer), bandes indépendantes (aigus intacts quand seules les basses sont compressées, contre −20 dB en large bande), compensation par bande, réglages invalides = identité, détection liée et canal silencieux exactement silencieux, longueur conservée, lecture fragmentée identique, mise à l'échelle par l'intensité |
 | `profiles_radio_test.go` | les 7 profils radio existent, noms et `ParseProfile`, constantes existantes inchangées, niveau à −18 dBFS dans la fourchette mesurée de chacun, aucune crête au-dessus du plafond de −1 dBFS (7 profils × 4 intensités × 7 fréquences, mono et stéréo, signal à −0,1 dBFS), identité à intensité 0 / négative / NaN, longueur conservée, profil sans égalisation (`radio-natural`) qui agit quand même, élargissement du côté/milieu à la largeur du profil à 3 kHz et pas à 60 Hz, image de `radio-talk` inchangée, dynamique non écrasée (écart faible/fort conservé), basse fréquence d'échantillonnage |
 | `loudness_test.go` | coefficients de la pondération K à 48 kHz égaux à la table de l'UIT-R BS.1770-4 (10⁻⁹), gain de +0,69 dB à 1 kHz (44,1 / 48 / 96 kHz), étalonnage (X dBFS stéréo → X LUFS, mono −3,01 dB, à 44,1 / 48 / 96 kHz), accord avec ffmpeg `ebur128` sur deux signaux (±0,1 LU et ±1 LU), doubles portes (calme, silence numérique, niveau à −8 LU retenu), plage de sonie (stable ≈ 0, deux niveaux ≈ 10 LU), cas non valables (silence, vide, 200 ms, paramètres) sans `-Inf` ni `NaN`, morceaux de toute taille (octet par octet, 3 octets, 4097 octets, octet isolé) identiques, plusieurs canaux |
+| `crossfeed_test.go` | identité (force nulle, NaN, négative, coupure à Nyquist ou NaN, fréquence nulle, mono, trois canaux) ; son au centre identique bit à bit et `G + D` conservé à 1 LSB ; côté réduit de `|1 − Strength × H|` (réponse complexe du passe-bas) à 100 Hz, presque intact à 8 kHz, coupure réglable ; fuite d'un son à gauche (−10,5 dB à 100 Hz, < −30 dB à 8 kHz) ; retard décalant la fuite à la trame exacte et coloration du centre mesurée ; silence exact ; bornes ; lecture fragmentée |
 | `notch_test.go` | zéro exact au centre (< −100 dB) et largeur à −3 dB égale à f0 / Q (3 fréquences d'échantillonnage × 3 fréquences centrales × 3 Q), signal intact une octave de part et d'autre, Q croissant → bande plus étroite, Q <= 0 = 10, gain ignoré, ronflement de 50 Hz supprimé sans toucher la musique, fréquences invalides ignorées, combinaison avec d'autres bandes, lecture fragmentée |
 | `gate_test.go` | identité (rapport ≤ 1, NaN, seuil NaN, plage NaN, fréquence nulle) ; courbe statique point par point, continuité sur tout l'axe, plafond `RangeDB` ; sons stables au-dessus du seuil intacts (5 fréquences de 40 Hz à 8 kHz × 2 niveaux) ; réduction sous le seuil (expandeur et gate) ; salves au-dessus d'un bruit de fond (bruit réduit de plus de 25 dB, salves intactes, ouverture courte contre longue) ; détection liée stéréo ; silence exact ; bornes ; lecture fragmentée |
 | `parallel_test.go` | identité (mix nul, NaN, négatif, compresseur sans effet, seuil NaN, fréquence nulle) ; `Mix = 1` égal au compresseur seul, `Mix = 0,5` égal à la moyenne à 1 LSB ; passage faible relevé de plus de 3 dB de plus que le fort, queue d'un son relevée de plus de 4 dB de plus que son attaque ; détection liée stéréo ; silence exact ; `Mix` ramené dans [0, 1] ; lecture fragmentée |
@@ -837,7 +867,7 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `ab_test.go` | niveau efficace (sinus, silence numérique ignoré, paramètres invalides), gains qui égalisent les sonies sans jamais relever (traité plus fort, original plus fort, égaux, silence), sonie et non niveau efficace (basse contre 3 kHz), repli sur le niveau efficace sous 400 ms, `ApplyGain` (identité à 0 dB, −6 dB, écrêtage, copie, octet isolé), segments purs hors fondu, fondu linéaire monotone dans les deux sens, deux flux identiques bit à bit, entrelacement stéréo, longueur et paramètres invalides |
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
-| `cmd/audioprofile/fx_test.go` | `-fx notch` (50 Hz supprimé, 1 kHz intact, deux notch de suite, bornes), `-fx gate` (fort intact, faible réduit, ratio 1 identique, bornes), `-fx parcomp` (mix 0 identique, flux modifié, toutes les bornes), `-fx deess` et `-fx exciter` (réduction mesurée, sous le seuil, identité à ratio 1 / amount 0, toutes les bornes, chaîne complète avec un profil), `-fx reverb` (queue après le son, mix 0 identique, défaut, bornes, effets chaînés et nom en `-ab`), `-fx transient` (identité sans réglage, attaque mesurée, bornes), `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
+| `cmd/audioprofile/fx_test.go` | `-fx crossfeed` (centre identique, fuite à droite, mono, bornes), `-fx notch` (50 Hz supprimé, 1 kHz intact, deux notch de suite, bornes), `-fx gate` (fort intact, faible réduit, ratio 1 identique, bornes), `-fx parcomp` (mix 0 identique, flux modifié, toutes les bornes), `-fx deess` et `-fx exciter` (réduction mesurée, sous le seuil, identité à ratio 1 / amount 0, toutes les bornes, chaîne complète avec un profil), `-fx reverb` (queue après le son, mix 0 identique, défaut, bornes, effets chaînés et nom en `-ab`), `-fx transient` (identité sans réglage, attaque mesurée, bornes), `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
 | `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, annonce de la source en cours à l'instant et juste avant son segment, annonces retardées dans l'ordre, pas de couleur hors terminal, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, `-target-lufs` (−14 / −23 / −30 mesurés sur la sortie, après un profil, avec `-loudness`, cible inatteignable, silence, toutes les erreurs d'options), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 
 ## Limites connues

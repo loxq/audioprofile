@@ -88,6 +88,32 @@ var fxDefs = []fxDef{
 		},
 	},
 	{
+		name: "crossfeed",
+		doc:  "crossfeed pour casque : mélange un peu de chaque canal dans l'autre aux graves (stéréo seulement), milieu conservé",
+		params: []fxParam{
+			{"strength", 0.6, false, "force, de 0 (sans effet) à 1 (graves presque mono)"},
+			{"cutoff", 700, false, "fréquence en Hz sous laquelle les canaux se mélangent"},
+			{"delay", 0, false, "retard du signal croisé en ms, de 0 à 1 (0,25 donne de la profondeur mais colore le centre)"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			if v["strength"] < 0 || v["strength"] > 1 {
+				return fmt.Errorf("strength doit être dans [0, 1] (reçu %g)", v["strength"])
+			}
+			if !(v["cutoff"] > 0) || v["cutoff"] >= float64(rate)/2 {
+				return fmt.Errorf("cutoff doit être dans ]0, %g[ Hz (reçu %g)", float64(rate)/2, v["cutoff"])
+			}
+			if v["delay"] < 0 || v["delay"] > 1 {
+				return fmt.Errorf("delay doit être dans [0, 1] ms (reçu %g)", v["delay"])
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.Crossfeed(src, rate, channels, audioprofile.CrossfeedSettings{Strength: v["strength"], CutoffHz: v["cutoff"], DelayMs: v["delay"]})
+			}
+		},
+	},
+	{
 		name: "notch",
 		doc:  "filtre coupe-bande étroit (zéro exact à freq, largeur à -3 dB de freq/q) : retire un ronflement à 50 ou 60 Hz, puis ses harmoniques avec d'autres -fx notch",
 		params: []fxParam{
