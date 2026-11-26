@@ -205,3 +205,44 @@ func TestFXTransient(t *testing.T) {
 		t.Errorf("transient absent de -list-fx : %q", list)
 	}
 }
+
+// -fx reverb : une salve suivie de silence laisse une queue ; sans mélange, rien ne change ; bornes vérifiées.
+func TestFXReverb(t *testing.T) {
+	in := make([]byte, 4*44100*2)
+	copy(in, pcm(300, 4000, 2)) // 4 000 trames de son, puis du silence
+	out, _, err := runCLI(t, in, "-fx", "reverb:room=0.4,mix=0.5")
+	if err != nil || len(out) != len(in) {
+		t.Fatalf("err=%v longueur %d/%d", err, len(out), len(in))
+	}
+	var tail float64
+	for _, v := range samplesOf(out)[2*20000 : 2*40000] { // bien après le son : la queue de la réverbération
+		tail += math.Abs(float64(v))
+	}
+	if tail == 0 {
+		t.Error("la réverbération doit laisser une queue après la fin du son")
+	}
+	if same, _, err := runCLI(t, in, "-fx", "reverb:mix=0"); err != nil || same != string(in) {
+		t.Errorf("mix=0 : le flux doit rester identique (err=%v)", err)
+	}
+	// défaut : un mélange de 0,25 modifie le flux
+	if def, _, err := runCLI(t, in, "-fx", "reverb"); err != nil || def == string(in) {
+		t.Errorf("réglages par défaut : le flux doit être modifié (err=%v)", err)
+	}
+	for _, tc := range []struct{ args, want string }{
+		{"reverb:room=1.5", "room doit être dans [0, 1]"},
+		{"reverb:damping=-0.1", "damping doit être dans [0, 1]"},
+		{"reverb:width=2", "width doit être dans [0, 1]"},
+		{"reverb:mix=1.01", "mix doit être dans [0, 1]"},
+		{"reverb:predelay=300", "predelay doit être dans [0, 200]"},
+		{"reverb:size=0.5", `paramètre inconnu "size"`},
+	} {
+		if _, _, err := runCLI(t, in, "-fx", tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("-fx %s : erreur %v, attendu %q", tc.args, err, tc.want)
+		}
+	}
+	// plusieurs effets dans l'ordre, et le nom du côté B
+	_, errOut, err := runCLI(t, pcm(300, 20000, 2), "-ab", "-fx", "transient:attack=0.5", "-fx", "reverb:mix=0.2", "-ab-seconds", "0.2")
+	if err != nil || !strings.Contains(errOut, "traité (transient:attack=0.5 + reverb:mix=0.2)") {
+		t.Errorf("err=%v %q", err, errOut)
+	}
+}

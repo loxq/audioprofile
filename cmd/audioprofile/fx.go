@@ -58,6 +58,34 @@ var fxDefs = []fxDef{
 		},
 	},
 	{
+		name: "reverb",
+		doc:  "réverbération (Freeverb) : la queue est coupée à la fin du flux, ajoutez du silence pour la laisser mourir",
+		params: []fxParam{
+			{"room", 0.5, false, "taille de la pièce, de 0 (petite) à 1 (grande)"},
+			{"damping", 0.5, false, "absorption des aigus, de 0 à 1"},
+			{"width", 1, false, "largeur stéréo de la réverbération, de 0 (mono) à 1"},
+			{"predelay", 0, false, "retard avant la réverbération, de 0 à 200 ms"},
+			{"mix", 0.25, false, "part de réverbération, de 0 (sec) à 1"},
+		},
+		check: func(v map[string]float64, rate, channels int) error {
+			for _, k := range []string{"room", "damping", "width", "mix"} {
+				if v[k] < 0 || v[k] > 1 {
+					return fmt.Errorf("%s doit être dans [0, 1] (reçu %g)", k, v[k])
+				}
+			}
+			if v["predelay"] < 0 || v["predelay"] > 200 {
+				return fmt.Errorf("predelay doit être dans [0, 200] ms (reçu %g)", v["predelay"])
+			}
+			return nil
+		},
+		build: func(v map[string]float64) func(io.Reader, int, int) io.Reader {
+			return func(src io.Reader, rate, channels int) io.Reader {
+				return audioprofile.Reverb(src, rate, channels, audioprofile.ReverbSettings{
+					RoomSize: v["room"], Damping: v["damping"], Width: v["width"], PreDelayMs: v["predelay"], Mix: v["mix"]})
+			}
+		},
+	},
+	{
 		name: "transient",
 		doc:  "renforçateur de transitoires : accentue ou adoucit l'attaque et la queue des sons, sans seuil",
 		params: []fxParam{
