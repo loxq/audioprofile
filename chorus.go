@@ -42,8 +42,9 @@ const (
 //
 // Chaque voix lit le signal à un retard de DelayMs ± DepthMs (sinusoïde de fréquence RateHz, décalée d'un
 // tour divisé par le nombre de voix) ; la lecture interpole sur quatre points. Le retard qui varie fait
-// varier la hauteur : l'écart de fréquence est de 2π × RateHz × DepthMs (par exemple 0,6 % pour 0,8 Hz et 3 ms).
-// Les voix sont moyennées (le nombre de voix ne change pas le niveau de l'effet) puis ajoutées au sec :
+// varier la hauteur : l'écart de fréquence est de 2π × RateHz × DepthMs (par exemple ±1,5 % pour 0,8 Hz et 3 ms, les valeurs par défaut,
+// soit environ 26 centièmes de ton : réduisez DepthMs si c'est trop).
+// Les voix sont moyennées (en ajouter ne rend pas l'effet plus fort) puis ajoutées au sec :
 // sortie = sec + Mix × moyenne des voix. En stéréo, la modulation du canal droit est décalée d'un quart de
 // tour : l'effet élargit l'image. Le sec n'est ni retardé ni modifié.
 //
