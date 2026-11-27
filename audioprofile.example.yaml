@@ -18,11 +18,8 @@ profiles:
     limiter:
       ceiling: -2         # ceiling (dBFS), lookahead (ms), release (ms)
     multiband:
-      bands:              # une entrée par bande (grave → aigu), fusionnée avec la bande de même rang ;
-        - {threshold: -24, ratio: 3}   # {} laisse une bande inchangée ; il faut les nommer toutes
-        - {}
-        - {}
-        - {}
+      bands:              # fusionné bande par bande (grave → aigu) : seule la 1re bande change,
+        - {threshold: -24, ratio: 3}   # les suivantes gardent leur valeur de départ
 
   radio-natural:
     limiter: {enabled: false}   # enabled: false supprime l'étage (compression, saturation, multiband, limiter)

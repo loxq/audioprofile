@@ -385,16 +385,27 @@ func (mc *multibandConfig) applyTo(base *audioprofile.MultibandSettings) (*audio
 		m.Crossovers = append([]float64(nil), *mc.Crossovers...)
 	}
 	if mc.Bands != nil {
-		bands := make([]audioprofile.CompressorSettings, len(*mc.Bands))
-		for i, bc := range *mc.Bands {
-			if bc.Enabled != nil {
-				return nil, fmt.Errorf("bands[%d] : enabled n'a pas de sens pour une bande (utilisez ratio: 1 et makeup: 0)", i)
-			}
+		given := *mc.Bands
+		// Les bandes qu'on ne nomme pas gardent leur valeur de départ : on complète la liste avec celles du profil de
+		// base, de même rang, jusqu'au nombre de bandes que demandent les séparations. Une bande de plus que le
+		// profil n'en a n'a rien à garder : si elle manque, la validation signale le nombre de bandes attendu.
+		count := len(given)
+		if want := len(m.Crossovers) + 1; base != nil && count < want {
+			count = min(want, max(count, len(base.Bands)))
+		}
+		bands := make([]audioprofile.CompressorSettings, count)
+		for i := range bands {
 			start := compressorStart
 			if base != nil && i < len(base.Bands) {
 				start = base.Bands[i]
 			}
-			bands[i] = bc.merge(start)
+			bands[i] = start
+			if i < len(given) {
+				if given[i].Enabled != nil {
+					return nil, fmt.Errorf("bands[%d] : enabled n'a pas de sens pour une bande (utilisez ratio: 1 et makeup: 0)", i)
+				}
+				bands[i] = given[i].merge(start)
+			}
 		}
 		m.Bands = bands
 	}

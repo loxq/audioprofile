@@ -121,11 +121,15 @@ amps:
 	if hits.Width != 1.5 || hits.Limiter.CeilingDB != -2 || hits.Limiter.ReleaseMs != hdef.Limiter.ReleaseMs {
 		t.Errorf("radio-hits : width %g, limiteur %+v", hits.Width, hits.Limiter)
 	}
-	if len(hits.Multiband.Bands) != 1 || hits.Multiband.Bands[0].Ratio != 4 || hits.Multiband.Bands[0].ThresholdDB != hdef.Multiband.Bands[0].ThresholdDB {
+	// une seule bande nommée : elle est fusionnée avec la bande de même rang, les autres gardent leur valeur de départ
+	if len(hits.Multiband.Bands) != 4 || hits.Multiband.Bands[0].Ratio != 4 || hits.Multiband.Bands[0].ThresholdDB != hdef.Multiband.Bands[0].ThresholdDB {
 		t.Errorf("multiband fusionné bande par bande : %+v", hits.Multiband.Bands)
 	}
-	if err := c.Validate(44100); err == nil {
-		t.Error("une seule bande pour trois séparations doit être refusée")
+	if !reflect.DeepEqual(hits.Multiband.Bands[1:], hdef.Multiband.Bands[1:]) {
+		t.Errorf("les bandes non nommées doivent garder leur valeur de départ : %+v", hits.Multiband.Bands[1:])
+	}
+	if err := c.Validate(44100); err != nil {
+		t.Errorf("la configuration est valide : %v", err)
 	}
 	amp, _ := c.Amp("crunch")
 	adef := audioprofile.AmpCrunch.Settings()
@@ -254,5 +258,54 @@ func TestMarshalRoundTrip(t *testing.T) {
 	}
 	if got, _ := parseCfg(t, string(b)).Amp("crunch"); got != as {
 		t.Errorf("ampli relu : %+v", got)
+	}
+}
+
+// Bandes du multibande : celles qu'on ne nomme pas gardent leur valeur de départ, tant que le profil en a une à garder.
+func TestConfigMultibandMissingBands(t *testing.T) {
+	hdef := audioprofile.RadioHits.Settings().Multiband // 3 séparations, 4 bandes
+	load := func(yml string) (audioprofile.MultibandSettings, error) {
+		c := parseCfg(t, yml)
+		s, _ := c.Profile("radio-hits")
+		return *s.Multiband, c.Validate(44100)
+	}
+	// 1. la 2e bande seule : {} devant ou une liste plus courte, même résultat que de tout nommer
+	m, err := load("profiles:\n  radio-hits:\n    multiband:\n      bands:\n        - {}\n        - {ratio: 5}\n")
+	if err != nil || len(m.Bands) != 4 || m.Bands[1].Ratio != 5 || m.Bands[0] != hdef.Bands[0] || m.Bands[2] != hdef.Bands[2] || m.Bands[3] != hdef.Bands[3] {
+		t.Errorf("bande 2 seule : %v %+v", err, m.Bands)
+	}
+	// 2. toutes nommées : rien de changé
+	m, err = load("profiles:\n  radio-hits:\n    multiband:\n      bands: [{}, {}, {}, {}]\n")
+	if err != nil || !reflect.DeepEqual(m, *hdef) {
+		t.Errorf("quatre {} : %v %+v", err, m)
+	}
+	// 3. trois bandes (deux séparations) : la liste donnée suffit, rien n'est ajouté
+	m, err = load("profiles:\n  radio-hits:\n    multiband:\n      crossovers: [200, 3000]\n      bands: [{ratio: 5}, {}, {}]\n")
+	if err != nil || len(m.Bands) != 3 || m.Bands[0].Ratio != 5 {
+		t.Errorf("trois bandes : %v %+v", err, m.Bands)
+	}
+	// 4. trois bandes demandées, une seule nommée : les rangs 2 et 3 viennent du profil de base
+	m, err = load("profiles:\n  radio-hits:\n    multiband:\n      crossovers: [200, 3000]\n      bands: [{ratio: 5}]\n")
+	if err != nil || len(m.Bands) != 3 || m.Bands[1] != hdef.Bands[1] || m.Bands[2] != hdef.Bands[2] {
+		t.Errorf("trois bandes, une nommée : %v %+v", err, m.Bands)
+	}
+	// 5. plus de bandes que le profil n'en a : rien à garder pour la 5e, l'erreur dit combien il en faut
+	_, err = load("profiles:\n  radio-hits:\n    multiband:\n      crossovers: [100, 500, 2000, 8000]\n      bands: [{ratio: 5}]\n")
+	if err == nil || !strings.Contains(err.Error(), "4 séparations demandent 5 bandes (reçu 4)") {
+		t.Errorf("cinq bandes, une nommée : %v", err)
+	}
+	// 6. plus de bandes nommées que de séparations : refusé, la liste n'est pas tronquée
+	_, err = load("profiles:\n  radio-hits:\n    multiband:\n      bands: [{}, {}, {}, {}, {}]\n")
+	if err == nil || !strings.Contains(err.Error(), "3 séparations demandent 4 bandes (reçu 5)") {
+		t.Errorf("cinq bandes pour trois séparations : %v", err)
+	}
+	// 7. un profil neuf n'a rien à garder : les bandes partent du compresseur de départ et la liste doit être complète
+	c := parseCfg(t, "profiles:\n  neuf:\n    multiband:\n      crossovers: [1000]\n      bands: [{ratio: 3}]\n")
+	neuf, _ := c.Profile("neuf")
+	if len(neuf.Multiband.Bands) != 1 || neuf.Multiband.Bands[0].ThresholdDB != StartCompressor().ThresholdDB {
+		t.Errorf("profil neuf : %+v", neuf.Multiband)
+	}
+	if err := c.Validate(44100); err == nil || !strings.Contains(err.Error(), "1 séparations demandent 2 bandes (reçu 1)") {
+		t.Errorf("profil neuf, bande manquante : %v", err)
 	}
 }
