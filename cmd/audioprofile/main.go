@@ -50,6 +50,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		channels   = fs.Int("channels", 2, "nombre de canaux (doit correspondre à celui de ffmpeg)")
 		list       = fs.Bool("list", false, "affiche les profils disponibles et quitte")
 		listAmps   = fs.Bool("list-amps", false, "affiche les préréglages d'ampli disponibles et quitte")
+		configPath = fs.String("config", "", "fichier YAML de réglages : profils, préréglages d'ampli et valeurs par défaut des effets (ce qu'il ne précise pas garde sa valeur par défaut ; voir -dump-config)")
+		dumpConfig = fs.Bool("dump-config", false, "écrit en YAML les réglages effectifs de tous les profils, amplis et effets (avec -config : fichier compris) et quitte : un point de départ à éditer")
 		listFX     = fs.Bool("list-fx", false, "affiche les effets de -fx et leurs paramètres, et quitte")
 	)
 	var fxs fxList
@@ -64,6 +66,9 @@ et écrit le même format sur la sortie standard. Exemple :
     | audioprofile -profile rock \
     | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
 
+Réglages            : -config reglages.yaml change les réglages des profils, amplis et effets
+                      (ce qu'il ne précise pas garde sa valeur par défaut) ; -dump-config
+                      écrit tous les réglages actuels, un point de départ à éditer
 Effets              : -fx hpf:freq=80 -fx lpf:freq=12000,order=4 (après le profil ou l'ampli,
                       dans l'ordre ; -list-fx pour la liste ; -profile devient facultatif)
 Profils d'égaliseur : -profile rock, pop, jazz, tube…
@@ -90,9 +95,18 @@ Options :
 		return fmt.Errorf("argument inattendu %q (les données passent par l'entrée standard)", fs.Arg(0))
 	}
 
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+
+	if *dumpConfig {
+		return cfg.dumpConfig(stdout)
+	}
+
 	if *list {
-		for _, p := range audioprofile.Profiles() {
-			fmt.Fprintln(stdout, p)
+		for _, n := range cfg.profileNames() {
+			fmt.Fprintln(stdout, n)
 		}
 		return nil
 	}
@@ -103,15 +117,15 @@ Options :
 	}
 
 	if *listAmps {
-		for _, p := range audioprofile.TubeAmpPresets() {
-			fmt.Fprintln(stdout, p)
+		for _, n := range cfg.ampNames() {
+			fmt.Fprintln(stdout, n)
 		}
 		return nil
 	}
 
 	var effects []fxEffect
 	for _, spec := range fxs {
-		e, err := parseFX(spec)
+		e, err := parseFX(spec, cfg.fxDefaults)
 		if err != nil {
 			return err
 		}
@@ -119,7 +133,7 @@ Options :
 	}
 	if *profile == "" && *amp == "" && len(effects) == 0 {
 		fs.Usage()
-		return errors.New("-profile ou -amp est obligatoire, sauf si au moins un -fx est donné (profils : " + profileNames() + " ; amplis : " + ampNames() + " ; effets : " + fxNames() + ")")
+		return errors.New("-profile ou -amp est obligatoire, sauf si au moins un -fx est donné (profils : " + strings.Join(cfg.profileNames(), ", ") + " ; amplis : " + strings.Join(cfg.ampNames(), ", ") + " ; effets : " + fxNames() + ")")
 	}
 	if *profile != "" && *amp != "" {
 		return errors.New("-profile et -amp sont exclusifs : choisissez l'un ou l'autre")
@@ -156,17 +170,17 @@ Options :
 		}
 	}
 	var (
-		p      audioprofile.Profile
-		preset audioprofile.TubeAmpPreset
-		ok     bool
+		profileSettings audioprofile.ProfileSettings
+		ampSettings     audioprofile.TubeAmpSettings
+		ok              bool
 	)
 	if *amp != "" {
-		if preset, ok = audioprofile.ParseTubeAmpPreset(*amp); !ok {
-			return fmt.Errorf("ampli inconnu %q (amplis : %s)", *amp, ampNames())
+		if ampSettings, ok = cfg.amp(*amp); !ok {
+			return fmt.Errorf("ampli inconnu %q (amplis : %s)", *amp, strings.Join(cfg.ampNames(), ", "))
 		}
 	} else if *profile != "" {
-		if p, ok = audioprofile.ParseProfile(*profile); !ok {
-			return fmt.Errorf("profil inconnu %q (profils : %s)", *profile, profileNames())
+		if profileSettings, ok = cfg.profile(*profile); !ok {
+			return fmt.Errorf("profil inconnu %q (profils : %s)", *profile, strings.Join(cfg.profileNames(), ", "))
 		}
 	}
 	if *rate <= 0 {
@@ -177,6 +191,9 @@ Options :
 	}
 	if *intensity < 0 || *intensity > audioprofile.MaxIntensity {
 		return fmt.Errorf("-intensity doit être dans [0, %g] (reçu %g)", audioprofile.MaxIntensity, *intensity)
+	}
+	if err := cfg.validate(*rate); err != nil {
+		return err
 	}
 	for _, e := range effects {
 		if err := e.validate(*rate, *channels); err != nil {
@@ -195,11 +212,13 @@ Options :
 		r := src
 		switch {
 		case *amp != "":
-			s := preset.Settings().Scaled(*intensity)
-			s.Cabinet = *cabinet
+			s := ampSettings.Scaled(*intensity)
+			if *cabinet { // sans -cabinet, le fichier de configuration décide
+				s.Cabinet = true
+			}
 			r = audioprofile.TubeAmp(r, *rate, *channels, s)
 		case *profile != "":
-			r = audioprofile.ApplyProfile(r, *rate, *channels, p, *intensity)
+			r = audioprofile.ApplyProfileSettings(r, *rate, *channels, profileSettings, *intensity)
 		}
 		for _, e := range effects {
 			r = e.apply(r, *rate, *channels)
@@ -408,22 +427,6 @@ func playAB(out *bufio.Writer, stderr io.Writer, mixed []byte, rate, channels in
 		}
 	}
 	return nil
-}
-
-func profileNames() string {
-	var names []string
-	for _, p := range audioprofile.Profiles() {
-		names = append(names, p.String())
-	}
-	return strings.Join(names, ", ")
-}
-
-func ampNames() string {
-	var names []string
-	for _, p := range audioprofile.TubeAmpPresets() {
-		names = append(names, p.String())
-	}
-	return strings.Join(names, ", ")
 }
 
 // isTerminal indique si r est un terminal (et non un pipe ou un fichier).

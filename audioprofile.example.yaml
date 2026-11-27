@@ -1,0 +1,58 @@
+# Exemple de fichier de réglages pour : audioprofile -config audioprofile.example.yaml ...
+#
+# Tout ce qui n'est pas écrit garde sa valeur codée en dur : un fichier vide ne change rien.
+# Pour voir toutes les valeurs actuelles, prêtes à être éditées : audioprofile -dump-config
+# Les clés inconnues sont refusées (une faute de frappe n'est jamais ignorée en silence).
+# Les nombres sont ceux d'une intensité de 1 ; -intensity s'applique par-dessus.
+
+profiles:
+  # Un profil prédéfini : seules les clés écrites changent.
+  rock:
+    compression:
+      ratio: 4            # threshold, ratio, attack, release, knee, makeup restent ceux du rock
+    saturation:
+      drive: 8            # drive, bias, output (dB), stages
+
+  radio-hits:
+    width: 1.4            # largeur stéréo (0 : pas d'élargissement)
+    limiter:
+      ceiling: -2         # ceiling (dBFS), lookahead (ms), release (ms)
+    multiband:
+      bands:              # fusionné bande par bande (grave → aigu) : seule la 1re bande change
+        - {threshold: -24, ratio: 3}
+
+  radio-natural:
+    limiter: {enabled: false}   # enabled: false supprime l'étage (compression, saturation, multiband, limiter)
+
+  # Les bandes d'égalisation sont remplacées en bloc (pas de fusion) : écrivez-les toutes.
+  # type : lowshelf, peaking, highshelf, gain, highpass, lowpass, notch
+  jazz:
+    bands:
+      - {type: lowshelf, freq: 120, gain: 3}
+      - {type: peaking, freq: 800, gain: -1, q: 1}
+      - {type: highshelf, freq: 10000, gain: 1.5}
+
+  # Un nom nouveau crée un profil, utilisable avec -profile. « base » part d'un profil prédéfini ;
+  # sans base, on part de rien.
+  jazz-sombre:
+    base: jazz
+    bands:
+      - {type: lowshelf, freq: 120, gain: 4}
+      - {type: highshelf, freq: 8000, gain: -3}
+    saturation: {drive: 4, bias: 0.3, output: 1}
+
+amps:
+  # drive, stages, bias, bass, mid, treble (dB), cabinet, output (dB)
+  crunch:
+    drive: 11
+    cabinet: false        # -cabinet sur la ligne de commande l'active quand même
+
+  mon-lead:
+    base: lead
+    stages: 4
+
+fx:
+  # Valeurs par défaut des paramètres de -fx : la ligne de commande l'emporte, et un paramètre
+  # obligatoire (freq de hpf) devient facultatif. Un booléen vaut 1 ou 0.
+  delay: {time: 350, feedback: 0.4, pingpong: true}
+  hpf: {freq: 80}

@@ -443,8 +443,9 @@ func fxNames() string {
 	return strings.Join(names, ", ")
 }
 
-// parseFX analyse « nom » ou « nom:cle=valeur,cle=valeur ».
-func parseFX(spec string) (fxEffect, error) {
+// parseFX analyse « nom » ou « nom:cle=valeur,cle=valeur ». defaults donne, par effet, les valeurs par
+// défaut du fichier de configuration (nil : celles du code).
+func parseFX(spec string, defaults map[string]map[string]float64) (fxEffect, error) {
 	spec = strings.TrimSpace(spec)
 	name, rest, hasParams := strings.Cut(spec, ":")
 	name = strings.ToLower(strings.TrimSpace(name))
@@ -486,6 +487,10 @@ func parseFX(spec string) (fxEffect, error) {
 	}
 	for _, p := range def.params {
 		if _, ok := vals[p.key]; ok {
+			continue
+		}
+		if v, ok := defaults[name][p.key]; ok { // valeur par défaut du fichier de configuration
+			vals[p.key] = v
 			continue
 		}
 		if p.required {

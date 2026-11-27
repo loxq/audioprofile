@@ -232,58 +232,7 @@ const MaxIntensity = 3.0
 // fort. Voir profiles_radio.go. Leur multibande est ignorée si une
 // séparation dépasse la fréquence de Nyquist (sampleRate < 12 kHz environ).
 func ApplyProfile(src io.Reader, sampleRate, channels int, p Profile, intensity float64) io.Reader {
-	if sampleRate <= 0 || !p.hasEffects() || intensity <= 0 || math.IsNaN(intensity) {
-		return Equalizer(src, sampleRate, channels, nil)
-	}
-	bands := p.Bands()
-	radio := profileRadio[p]
-	intensity = math.Min(MaxIntensity, intensity)
-	for i := range bands {
-		bands[i].GainDB *= intensity
-	}
-	// Le gain automatique ramène le pic de l'égalisation à 0 dB. Les profils avec limiteur
-	// n'en ont pas besoin : le limiteur garantit déjà leur plafond.
-	if peak := peakResponseDB(float64(sampleRate), designBands(float64(sampleRate), bands)); peak > 0 && radio.limit == nil {
-		bands = append(bands, Band{Type: Gain, GainDB: -peak})
-	}
-	sat := profileSaturation[p]
-	var comp *CompressorSettings
-	if c := profileCompression[p]; c != nil {
-		sc := scaleCompression(*c, intensity)
-		comp = &sc
-	}
-	// L'asymétrie ne croît pas au-delà de l'intensité 1 : à fort drive, elle repousserait
-	// le point de fonctionnement dans la zone saturée et les signaux faibles s'effondreraient.
-	out := sat.outputDB * intensity
-	if sat.outputDB > 0 { // un gain positif ne croît pas au-delà de l'intensité 1 : il dépasserait la marge
-		out = sat.outputDB * math.Min(intensity, 1)
-	}
-	c := chain{
-		bands: bands,
-		comp:  comp,
-		sat:   &saturation{driveDB: sat.driveDB * intensity, bias: sat.bias * math.Min(intensity, 1), outputDB: out, stages: sat.stages},
-	}
-	if radio.multi != nil {
-		m := scaleMultiband(*radio.multi, intensity)
-		c.multi = &m
-	}
-	if radio.width != 0 {
-		c.stereo = &stereoSettings{width: 1 + (radio.width-1)*intensity}
-	}
-	if radio.limit != nil {
-		l := *radio.limit
-		c.limit = &l
-	}
-	return newChainReader(src, sampleRate, channels, c)
-}
-
-// hasEffects indique si le profil modifie le son (faux pour Flat et un profil inconnu).
-func (p Profile) hasEffects() bool {
-	if p < 0 || p >= numProfiles {
-		return false
-	}
-	return len(profileBands[p]) > 0 || profileCompression[p] != nil ||
-		profileSaturation[p] != saturation{} || profileRadio[p].active()
+	return ApplyProfileSettings(src, sampleRate, channels, p.Settings(), intensity)
 }
 
 // peakResponseDB renvoie le gain maximal (en dB) de la chaîne de filtres,

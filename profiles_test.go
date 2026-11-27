@@ -225,3 +225,37 @@ func TestProfilesLevelDoesNotCollapseAboveOne(t *testing.T) {
 		}
 	}
 }
+
+// ApplyProfile n'est que ApplyProfileSettings sur les réglages du profil : même flux, octet pour octet.
+func TestApplyProfileSettingsMatchesApplyProfile(t *testing.T) {
+	in := sine(440, 44100, 6000)
+	for _, p := range Profiles() {
+		for _, intensity := range []float64{0.5, 1, 2.5} {
+			a, _ := io.ReadAll(ApplyProfile(bytes.NewReader(in), 44100, 1, p, intensity))
+			b, _ := io.ReadAll(ApplyProfileSettings(bytes.NewReader(in), 44100, 1, p.Settings(), intensity))
+			if !bytes.Equal(a, b) {
+				t.Errorf("%s à l'intensité %g : les flux diffèrent", p, intensity)
+			}
+		}
+	}
+	if out, _ := io.ReadAll(ApplyProfileSettings(bytes.NewReader(in), 44100, 1, ProfileSettings{}, 1)); !bytes.Equal(in, out) {
+		t.Error("des réglages vides doivent laisser le signal intact")
+	}
+}
+
+// Settings renvoie une copie profonde : la modifier ne touche pas les tables du paquet.
+func TestProfileSettingsIsDeepCopy(t *testing.T) {
+	s := RadioHits.Settings()
+	s.Bands[0].GainDB = 99
+	s.Compression.Ratio = 99
+	s.Multiband.Crossovers[0] = 99
+	s.Multiband.Bands[0].Ratio = 99
+	s.Limiter.CeilingDB = -30
+	if got := RadioHits.Settings(); got.Bands[0].GainDB == 99 || got.Compression.Ratio == 99 ||
+		got.Multiband.Crossovers[0] == 99 || got.Multiband.Bands[0].Ratio == 99 || got.Limiter.CeilingDB == -30 {
+		t.Error("Settings() doit renvoyer une copie profonde")
+	}
+	if (Profile(99).Settings().active()) || (Flat.Settings().active()) {
+		t.Error("Flat et un profil inconnu n'ont aucun étage")
+	}
+}

@@ -816,6 +816,40 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 | `-list`       | —       | Affiche les profils disponibles et quitte                         |
 | `-list-amps`  | —       | Affiche les préréglages d'ampli disponibles et quitte             |
 
+### Fichier de réglages (`-config`)
+
+`-config reglages.yaml` change les réglages des profils, des préréglages d'ampli et les valeurs par défaut des effets, sans toucher au code. **Tout ce que le fichier ne précise pas garde sa valeur codée en dur** : un fichier vide ne change rien. Sans `-config`, rien n'est lu.
+
+```sh
+./audioprofile -dump-config > reglages.yaml   # tous les réglages actuels, prêts à être édités
+# (garder seulement ce qu'on change, ou tout garder)
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -config reglages.yaml -profile rock \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+```
+
+```yaml
+profiles:
+  rock:                          # un profil prédéfini : seules les clés écrites changent
+    compression: {ratio: 4}
+    saturation: {drive: 8}
+  jazz-sombre:                   # un nom nouveau : un profil de plus, utilisable avec -profile
+    base: jazz                   # (facultatif) part d'un profil prédéfini
+    bands:
+      - {type: highshelf, freq: 8000, gain: -3}
+amps:
+  crunch: {drive: 11}
+fx:
+  delay: {time: 350, pingpong: true}   # défauts de -fx delay ; la ligne de commande l'emporte
+```
+
+- **Fusion** : les champs d'une section (`compression`, `saturation`, `limiter`…) se fusionnent avec les valeurs du profil ; les bandes de `multiband` se fusionnent bande par bande ; la liste `bands` de l'égaliseur est **remplacée en bloc**. `enabled: false` supprime un étage (`compression`, `saturation`, `multiband`, `limiter`), `width: 0` supprime l'élargissement. Un étage que le profil n'a pas démarre de valeurs neutres (compresseur : −20 dBFS, 2:1, 10 ms, 100 ms, genou 6 dB ; limiteur : −1 dBFS, 5 ms, 100 ms).
+- **Validation** : les clés inconnues, les types de bande inconnus et les valeurs hors bornes (gain, fréquence au-delà de Nyquist, ratio, plafond…) sont refusés avec un message, pour tous les profils du fichier même s'ils ne servent pas.
+- **Amplis** : `-cabinet` active le baffle même si le fichier le désactive ; sans `-cabinet`, c'est le fichier qui décide.
+- `-list` et `-list-amps` montrent aussi les noms définis par le fichier. L'exemple complet et commenté est [audioprofile.example.yaml](audioprofile.example.yaml).
+
+Côté bibliothèque, `Profile.Settings()` renvoie les réglages complets d'un profil (une copie à modifier librement) et `ApplyProfileSettings` les applique : `ApplyProfile(src, …, p, i)` équivaut à `ApplyProfileSettings(src, …, p.Settings(), i)`.
+
 ### Ajouter des effets (`-fx`)
 
 ```sh
