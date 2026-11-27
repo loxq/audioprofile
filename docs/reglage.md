@@ -58,6 +58,8 @@ Côté bibliothèque, `Profile.Settings()` renvoie les réglages complets d'un p
 
 `-serve 127.0.0.1:8080` ouvre un petit serveur local et une page de curseurs : on règle le profil, l'ampli et les effets **en écoutant**, sans éditer de fichier. Chaque changement s'applique en cours de lecture, sans clic (même mécanisme que `-watch`).
 
+![Le panneau de réglage : vumètres, sonie et spectre avant / après avec la courbe de l'égaliseur, puis les curseurs du profil](audioprofile-web.png)
+
 ```sh
 # boucler un morceau pour régler tranquillement
 ffmpeg -loglevel error -stream_loop -1 -i musique.mp3 -f s16le -ar 44100 -ac 2 - \

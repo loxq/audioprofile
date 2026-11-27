@@ -4,6 +4,10 @@ Des briques de traitement audio **composables** pour Go, quelques préréglages 
 
 Tout se fait **au fil de l'eau** sur des `io.Reader` : on branche un flux PCM, on récupère un autre `io.Reader`, sans charger le fichier en mémoire. Les briques s'enchaînent.
 
+[![Le panneau de réglage d'audioprofile en train de régler le profil rock : vumètres, sonie et spectre avant / après avec la courbe de l'égaliseur en pointillés, puis les curseurs des bandes, du compresseur et de la saturation](docs/audioprofile-web.png)](docs/reglage.md#panneau-de-réglage--serve)
+
+*Le panneau de réglage (`-serve`) pendant la lecture : vumètres, sonie et spectre avant / après avec la courbe de l'égaliseur, et les curseurs du profil, appliqués en direct.*
+
 ## Démarrage rapide
 
 ```sh
