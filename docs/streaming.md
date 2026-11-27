@@ -60,6 +60,30 @@ planning ──▶ décodage ──▶ [ Switcher : profil + effets ] ──▶ 
 
 Un exemple complet, testé, avec ffmpeg, un vrai protocole Icecast et l'annonce des titres : [examples/webradio](../examples/webradio/README.md).
 
+## Voir ce que fait la chaîne : les mesures
+
+Le panneau affiche des vumètres, la sonie et le spectre, avant et après le traitement. Il suffit de deux `Meter` autour de la chaîne : un sur la source, un sur le flux traité.
+
+```
+source ──▶ [Meter entrée] ──▶ Switcher (chaîne) ──▶ [Meter sortie] ──▶ encodeur
+                │                                          │
+                └──── Tuner.SetMeters ─────────────────────┘ ──▶ panneau (page de mesures)
+```
+
+```go
+pl := live.Pipeline{Profile: "rock", Intensity: 1, Rate: 44100, Channels: 2}
+build, _ := pl.Build(nil)
+
+in, out := audioprofile.NewMeter(44100, 2), audioprofile.NewMeter(44100, 2)
+sw := audioprofile.NewSwitcher(in.Wrap(src), 44100, 2, build)
+processed := out.Wrap(sw) // c'est ce flux-là qu'on lit et qu'on envoie à l'encodeur
+
+tuner, _ := live.NewTuner(nil, pl, sw)
+tuner.SetMeters(in, out) // avant panel.Serve
+```
+
+Les mêmes `Meter` servent à la **surveillance en exploitation**, sans page : lire `Snapshot` de temps en temps pour détecter un silence (`PeakDBFS` au plancher depuis trop longtemps), un écrêtage (`ClipCount` qui augmente) ou une dérive de sonie (`ShortTermLUFS`). Un `Meter` coûte moins d'un pour cent d'un cœur par flux et n'interrompt jamais le flux.
+
 ## Le Switcher
 
 `NewSwitcher(src, rate, channels, build)` renvoie un flux dont la chaîne se remplace à chaud avec `Swap(build)`.

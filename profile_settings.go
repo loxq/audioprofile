@@ -3,6 +3,7 @@ package audioprofile
 import (
 	"io"
 	"math"
+	"math/cmplx"
 )
 
 // SaturationSettings règle l'étage de saturation douce d'un profil, appliqué après le
@@ -75,16 +76,8 @@ func ApplyProfileSettings(src io.Reader, sampleRate, channels int, s ProfileSett
 	if sampleRate <= 0 || !s.active() || intensity <= 0 || math.IsNaN(intensity) {
 		return Equalizer(src, sampleRate, channels, nil)
 	}
-	bands := append([]Band(nil), s.Bands...)
 	intensity = math.Min(MaxIntensity, intensity)
-	for i := range bands {
-		bands[i].GainDB *= intensity
-	}
-	// Le gain automatique ramène le pic de l'égalisation à 0 dB. Les profils avec limiteur
-	// n'en ont pas besoin : le limiteur garantit déjà leur plafond.
-	if peak := peakResponseDB(float64(sampleRate), designBands(float64(sampleRate), bands)); peak > 0 && s.Limiter == nil {
-		bands = append(bands, Band{Type: Gain, GainDB: -peak})
-	}
+	bands := s.eqBands(float64(sampleRate), intensity)
 	var comp *CompressorSettings
 	if s.Compression != nil {
 		sc := scaleCompression(*s.Compression, intensity)
@@ -114,4 +107,55 @@ func ApplyProfileSettings(src io.Reader, sampleRate, channels int, s ProfileSett
 		c.limit = &l
 	}
 	return newChainReader(src, sampleRate, channels, c)
+}
+
+// eqBands renvoie les bandes d'égalisation telles qu'ApplyProfileSettings les applique : gains multipliés par l'intensité
+// (déjà ramenée dans [0, MaxIntensity]), puis, pour un profil sans limiteur, un gain global négatif qui ramène à 0 dB la
+// fréquence la plus renforcée. Les profils avec limiteur n'en ont pas besoin : le limiteur garantit déjà leur plafond.
+func (s ProfileSettings) eqBands(fs, intensity float64) []Band {
+	bands := append([]Band(nil), s.Bands...)
+	for i := range bands {
+		bands[i].GainDB *= intensity
+	}
+	if peak := peakResponseDB(fs, designBands(fs, bands)); peak > 0 && s.Limiter == nil {
+		bands = append(bands, Band{Type: Gain, GainDB: -peak})
+	}
+	return bands
+}
+
+// EQResponse renvoie le gain (dB) de l'égaliseur du profil à chacune des fréquences freqsHz, pour un flux de sampleRate Hz,
+// à l'intensité donnée : celui d'ApplyProfileSettings, gain automatique compris. Seule l'égalisation y figure : ni compresseur,
+// ni saturation, ni multibande, qui dépendent du signal. C'est la courbe à tracer sur un analyseur de spectre. Une
+// intensité <= 0 ou NaN, des réglages sans égalisation ou une fréquence d'échantillonnage <= 0 donnent des zéros.
+func (s ProfileSettings) EQResponse(sampleRate int, intensity float64, freqsHz []float64) []float64 {
+	if sampleRate <= 0 || intensity <= 0 || math.IsNaN(intensity) {
+		return make([]float64, len(freqsHz))
+	}
+	return BandsResponse(sampleRate, s.eqBands(float64(sampleRate), math.Min(MaxIntensity, intensity)), freqsHz)
+}
+
+// BandsResponse renvoie le gain (dB) de la suite de bandes d'égalisation à chacune des fréquences freqsHz (Hz), pour un
+// flux de sampleRate Hz : la réponse en fréquence de ce qu'appliquerait Equalizer(src, sampleRate, channels, bands).
+// Une fréquence <= 0 ou au-delà de Nyquist donne 0.
+func BandsResponse(sampleRate int, bands []Band, freqsHz []float64) []float64 {
+	out := make([]float64, len(freqsHz))
+	if sampleRate <= 0 {
+		return out
+	}
+	fs := float64(sampleRate)
+	chain := designBands(fs, bands)
+	for i, f := range freqsHz {
+		if !(f > 0) || f >= fs/2 {
+			continue
+		}
+		z := cmplx.Rect(1, -2*math.Pi*f/fs) // z^-1
+		h := complex(1, 0)
+		for _, c := range chain {
+			num := complex(c.b0, 0) + complex(c.b1, 0)*z + complex(c.b2, 0)*z*z
+			den := 1 + complex(c.a1, 0)*z + complex(c.a2, 0)*z*z
+			h *= num / den
+		}
+		out[i] = 20 * math.Log10(cmplx.Abs(h))
+	}
+	return out
 }

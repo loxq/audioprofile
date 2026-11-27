@@ -49,6 +49,9 @@ type Schema struct {
 	FX         []FXSchema `json:"fx"`
 	Profiles   []string   `json:"profiles"`
 	Amps       []string   `json:"amps"`
+	// MeterFreqs : fréquences centrales (Hz) des bandes du spectre de MeterFrame ; vide si le Backend ne mesure pas, et
+	// la page n'affiche alors pas les vumètres.
+	MeterFreqs []float64 `json:"meterFreqs,omitempty"`
 	// Defaults : valeurs d'un étage qu'on active alors que le profil n'en a pas.
 	Defaults struct {
 		Compression *Comp    `json:"compression"`

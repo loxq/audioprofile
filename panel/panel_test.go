@@ -231,3 +231,13 @@ func TestServe(t *testing.T) {
 	}
 	defer stop2()
 }
+
+// La page embarquée contient de quoi afficher les mesures et se brancher sur le flux d'événements.
+func TestPageHasTheMeters(t *testing.T) {
+	body := do(Handler(&fake{}), "GET", "/", "", nil).Body.String()
+	for _, want := range []string{`id="meters"`, `id="vu"`, `id="spectrum"`, `/api/meters`, "EventSource", "meterFreqs", `id="lufs-in-m"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("%q absent de la page", want)
+		}
+	}
+}

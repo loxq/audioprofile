@@ -185,3 +185,23 @@ func AmpFrom(s audioprofile.TubeAmpSettings) *Amp {
 func (a *Amp) Settings() audioprofile.TubeAmpSettings {
 	return audioprofile.TubeAmpSettings{DriveDB: a.Drive, Stages: a.Stages, Bias: a.Bias, BassDB: a.Bass, MidDB: a.Mid, TrebleDB: a.Treble, Cabinet: a.Cabinet, OutputDB: a.Output}
 }
+
+// MeterSide est la mesure d'un côté de la chaîne (avant ou après le traitement). Les niveaux sont en dBFS, la sonie en
+// LUFS ; -120 signifie silence ou valeur pas encore connue.
+type MeterSide struct {
+	PeakDB        []float64 `json:"peakDb"`    // par canal : crête d'échantillon sur les 200 dernières ms
+	RMSDB         []float64 `json:"rmsDb"`     // par canal : niveau efficace sur les 300 dernières ms
+	Clips         int64     `json:"clips"`     // échantillons à la pleine échelle depuis le début (cumul)
+	MomentaryLUFS float64   `json:"momentary"` // sonie sur 400 ms
+	ShortTermLUFS float64   `json:"shortTerm"` // sonie sur 3 s
+	Spectrum      []float64 `json:"spectrum"`  // niveau de chaque bande de Schema.MeterFreqs
+}
+
+// MeterFrame est une image de mesures : le flux avant la chaîne, le flux après, et la courbe de l'égaliseur.
+type MeterFrame struct {
+	In  MeterSide `json:"in"`
+	Out MeterSide `json:"out"`
+	// Curve est le gain (dB) de l'égaliseur en vigueur à chaque fréquence de Schema.MeterFreqs, à tracer sur le spectre ;
+	// vide quand il n'y en a pas (ampli, aucun traitement, original).
+	Curve []float64 `json:"curve,omitempty"`
+}

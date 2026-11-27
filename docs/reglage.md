@@ -67,6 +67,12 @@ ffmpeg -loglevel error -stream_loop -1 -i musique.mp3 -f s16le -ar 44100 -ac 2 -
 ```
 
 - **Ce qu'on règle** : le profil (bandes d'égalisation à ajouter, retirer ou changer de type, compresseur, limiteur, saturation, largeur stéréo, compression multibande) ou l'ampli (drive, étages, biais, timbre, baffle), l'intensité, et la chaîne d'effets (ajout, retrait, ordre, activation et paramètres de chacun). On peut changer de profil ou d'ampli dans la page ; un étage absent d'un profil s'active par sa case.
+- **Mesures** : en haut de la page, ce que fait la chaîne, vu **avant et après** le traitement et mis à jour une vingtaine de fois par seconde :
+  - des **vumètres** par canal (niveau efficace, crête avec son maintien, voyant d'écrêtage) ;
+  - la **sonie** momentanée (400 ms) et à court terme (3 s) en LUFS, et leur écart sortie − entrée en LU ;
+  - le **spectre** en 64 bandes (20 Hz à 20 kHz, échelle logarithmique), l'entrée en gris et la sortie en couleur, avec par-dessus, sur son propre axe (± 24 dB), la **courbe de l'égaliseur** en vigueur : on voit l'effet d'un réglage de bande pendant qu'on le fait. La case « courbe de l'égaliseur » la masque ; elle n'existe que pour un profil (pas pour un ampli ni l'original).
+
+  Avec `-serve`, les mesures sont branchées automatiquement. Dans un programme à vous, créez deux `Meter` (voir [Mesure en continu](mesure.md#mesure-en-continu-meter)), enveloppez la source avec le premier et le flux traité avec le second, puis `Tuner.SetMeters(in, out)` avant de servir : la page reçoit les images par un flux d'événements (`GET /api/meters`, Server-Sent Events) et masque la section si le `Backend` ne mesure pas. La crête est une crête d'échantillon, pas une crête inter-échantillons.
 - **Comparer** : la case « Original (A/B) » coupe tout le traitement sans toucher aux réglages, pour juger à niveau égal du résultat.
 - **Garder un réglage** : « Exporter » donne le YAML du profil ou de l'ampli (à coller dans le fichier de `-config`) et la ligne de commande équivalente, effets compris.
 - **Départ** : l'état de départ est celui de la ligne de commande, `-config` compris. Sans `-profile` ni `-amp`, on part sans traitement et on choisit dans la page.

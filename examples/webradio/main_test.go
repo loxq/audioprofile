@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +25,7 @@ import (
 	"github.com/loxq/audioprofile"
 	"github.com/loxq/audioprofile/config"
 	"github.com/loxq/audioprofile/live"
+	"github.com/loxq/audioprofile/panel"
 )
 
 // ---------------------------------------------------------------- outils
@@ -688,3 +691,66 @@ func TestStartErrors(t *testing.T) {
 }
 
 func loadTestConfig(path string) (*config.Config, error) { return config.Load(path) }
+
+// Avec le panneau, les mesures portent sur le flux qui part vers Icecast : l'entrée est le son décodé, la sortie le son traité.
+func TestRadioPanelMetersTheOutgoingStream(t *testing.T) {
+	needFFmpeg(t)
+	dir := t.TempDir()
+	makeTrack(t, dir, "t.mp3", 3)
+	pl := writeFile(t, dir, "playlist.txt", "t.mp3 | Boucle\n")
+	ice := newFakeIcecast(t)
+	o := radioOptions(t, pl, ice.URL("/live"), func(string, ...any) {})
+	o.loop, o.panel = true, "127.0.0.1:0"
+	r := run(t, o)
+	size := func() int {
+		s := ice.Sources()
+		if len(s) == 0 {
+			return 0
+		}
+		return len(s[0].Body())
+	}
+	waitFor(t, "une seconde de son", 20*time.Second, func() bool { return size() > 16000 })
+
+	state := `{"kind":"profile","name":"reglage","intensity":1,"bypass":false,
+	  "profile":{"bands":[{"type":"gain","freq":0,"gain":-12,"q":0,"order":0}],"compression":null,"saturation":null,"multiband":null,"width":0,"limiter":null},"fx":[]}`
+	req, _ := http.NewRequest("PUT", r.PanelURL+"api/state", strings.NewReader(state))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("PUT : %v %v", err, resp)
+	}
+	resp.Body.Close()
+	before := size()
+	waitFor(t, "une seconde de son après le réglage", 20*time.Second, func() bool { return size() > before+16000 })
+
+	sse, err := http.Get(r.PanelURL + "api/meters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sse.Body.Close()
+	var f panel.MeterFrame
+	br := bufio.NewReader(sse.Body)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
+			json.Unmarshal([]byte(data), &f)
+			if f.In.PeakDB[0] > -60 { // le flux a commencé
+				break
+			}
+		}
+	}
+	// la sinusoïde de lavfi est à −18 dBFS, et le passage de mono à stéréo la baisse de 3 dB : ~−21 dBFS. Après −12 dB, la
+	// sortie est ~12 dB plus bas que l'entrée
+	if math.Abs(f.In.PeakDB[0]+21) > 1.5 {
+		t.Errorf("entrée : %.1f dBFS, attendu ~−21", f.In.PeakDB[0])
+	}
+	if d := f.Out.PeakDB[0] - f.In.PeakDB[0]; math.Abs(d+12) > 1.5 {
+		t.Errorf("écart sortie − entrée : %.1f dB, attendu −12", d)
+	}
+	if len(f.Out.Spectrum) != 64 || len(f.Curve) != 64 {
+		t.Errorf("%d bandes, %d points de courbe", len(f.Out.Spectrum), len(f.Curve))
+	}
+}

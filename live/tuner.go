@@ -24,9 +24,14 @@ type Tuner struct {
 
 	mu    sync.Mutex
 	state panel.State
+	in    *audioprofile.Meter // le flux avant la chaîne (nil : pas de mesure)
+	out   *audioprofile.Meter // le flux après
 }
 
-var _ panel.Backend = (*Tuner)(nil)
+var (
+	_ panel.Backend = (*Tuner)(nil)
+	_ panel.Metered = (*Tuner)(nil)
+)
 
 // NewTuner prépare le panneau : l'état de départ est celui de p (profil ou ampli, effets), avec les valeurs de cfg
 // (qui peut être nil). sw doit être le Switcher dont la chaîne de départ est p.Build(cfg).
@@ -59,6 +64,43 @@ func NewTuner(cfg *config.Config, p Pipeline, sw *audioprofile.Switcher) (*Tuner
 	return &Tuner{cfg: cfg, pl: p, sw: sw, state: st}, nil
 }
 
+// SetMeters branche les mesures : in mesure le flux avant la chaîne (enveloppez la source avec in.Wrap), out le flux
+// après (enveloppez le Switcher avec out.Wrap). La page du panneau affiche alors des vumètres, la sonie et le spectre
+// avant et après le traitement, avec la courbe de l'égaliseur en vigueur. À appeler avant de servir le panneau. Les deux
+// doivent avoir été créés avec la fréquence d'échantillonnage et le nombre de canaux de la chaîne.
+func (t *Tuner) SetMeters(in, out *audioprofile.Meter) {
+	t.mu.Lock()
+	t.in, t.out = in, out
+	t.mu.Unlock()
+}
+
+func (t *Tuner) meters() (in, out *audioprofile.Meter) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.in, t.out
+}
+
+func meterSide(s audioprofile.MeterSnapshot) panel.MeterSide {
+	return panel.MeterSide{PeakDB: s.PeakDBFS, RMSDB: s.RMSDBFS, Clips: s.ClipCount,
+		MomentaryLUFS: s.MomentaryLUFS, ShortTermLUFS: s.ShortTermLUFS, Spectrum: s.SpectrumDBFS}
+}
+
+// Meters renvoie les mesures actuelles, avec la courbe de l'égaliseur du profil en vigueur (rien pour un ampli, une
+// chaîne sans profil ou l'original). ok est faux sans SetMeters.
+func (t *Tuner) Meters() (panel.MeterFrame, bool) {
+	in, out := t.meters()
+	if in == nil || out == nil {
+		return panel.MeterFrame{}, false
+	}
+	frame := panel.MeterFrame{In: meterSide(in.Snapshot()), Out: meterSide(out.Snapshot())}
+	if st := t.State(); st.Kind == panel.KindProfile && !st.Bypass && st.Profile != nil {
+		if ps, err := st.Profile.Settings(); err == nil {
+			frame.Curve = ps.EQResponse(t.pl.Rate, st.Intensity, in.SpectrumFreqs())
+		}
+	}
+	return frame, true
+}
+
 // Schema décrit les curseurs : profils, amplis et effets.
 func (t *Tuner) Schema() panel.Schema {
 	s := panel.NewSchema(t.pl.Rate, t.pl.Channels)
@@ -69,6 +111,9 @@ func (t *Tuner) Schema() panel.Schema {
 	s.FX = fxSchemas()
 	s.Profiles = t.cfg.ProfileNames()
 	s.Amps = t.cfg.AmpNames()
+	if in, _ := t.meters(); in != nil {
+		s.MeterFreqs = in.SpectrumFreqs()
+	}
 	return s
 }
 

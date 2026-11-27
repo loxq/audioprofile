@@ -58,7 +58,7 @@ Les profils sont ceux de la bibliothèque (`radio-talk`, `radio-hits`, `tube`…
 | `-rate`, `-channels` | format du flux traité : 44100 Hz, 2 canaux (doit être celui de vos fichiers) |
 | `-config`, `-profile`, `-intensity`, `-fx` | profils personnalisés, profil par défaut (vide : aucun traitement), intensité, effets après le profil |
 | `-admin-user`, `-admin-password` | administration d'Icecast : annonce le titre en cours (vide : pas d'annonce) |
-| `-panel 127.0.0.1:8080` | ouvre le panneau de réglage sur le flux qui part vers Icecast |
+| `-panel 127.0.0.1:8080` | ouvre le panneau de réglage sur le flux qui part vers Icecast, avec ses vumètres, sa sonie et son spectre avant / après |
 | `-loop` | repasser la liste quand elle est finie (vrai par défaut) |
 | `-retry` | pause avant de relancer l'encodeur s'il s'arrête (3 s) |
 

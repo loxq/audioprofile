@@ -38,6 +38,17 @@ type Backend interface {
 	Export() (string, error)
 }
 
+// Metered est un Backend qui mesure le flux : la page affiche alors des vumètres, la sonie et le spectre, avant et après
+// le traitement. Le Backend renvoie les mesures actuelles (ok faux tant qu'il n'y en a pas) ; la page les reçoit par un
+// flux d'événements, une vingtaine de fois par seconde.
+type Metered interface {
+	Backend
+	Meters() (frame MeterFrame, ok bool)
+}
+
+// meterInterval est le délai entre deux images de mesures (une variable pour les tests).
+var meterInterval = 40 * time.Millisecond
+
 const maxBody = 1 << 20
 
 // Handler renvoie le gestionnaire HTTP du panneau.
@@ -88,6 +99,9 @@ func handler(b Backend, allowHost func(host string) bool) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
+	if mb, ok := b.(Metered); ok {
+		mux.HandleFunc("GET /api/meters", func(w http.ResponseWriter, r *http.Request) { serveMeters(w, r, mb) })
+	}
 	mux.HandleFunc("GET /api/preset", func(w http.ResponseWriter, r *http.Request) {
 		pp, pa, err := b.Preset(r.URL.Query().Get("kind"), r.URL.Query().Get("name"))
 		if err != nil {
@@ -152,4 +166,41 @@ func Serve(addr string, b Backend) (pageURL string, stop func(), err error) {
 	go func() { defer close(done); srv.Serve(ln) }()
 	var once sync.Once
 	return fmt.Sprintf("http://%s/", ln.Addr()), func() { once.Do(func() { srv.Close(); <-done }) }, nil
+}
+
+// serveMeters envoie les mesures au client comme un flux d'événements (Server-Sent Events) : une ligne « data: » en JSON
+// par image, jusqu'à ce que le client parte. Un client lent ne ralentit rien : il reçoit l'image du moment, pas le retard.
+func serveMeters(w http.ResponseWriter, r *http.Request, b Metered) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "flux d'événements non pris en charge", http.StatusInternalServerError)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Accel-Buffering", "no") // pas de tampon dans un proxy nginx
+	io.WriteString(w, "retry: 1000\n\n")
+	flusher.Flush()
+	tick := time.NewTicker(meterInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-tick.C:
+		}
+		frame, ok := b.Meters()
+		if !ok {
+			continue
+		}
+		data, err := json.Marshal(frame)
+		if err != nil { // une valeur non finie : on saute l'image plutôt que de couper le flux
+			continue
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
 }

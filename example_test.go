@@ -203,3 +203,31 @@ func ExampleNewSwitcher() {
 		len(out))
 	// Output: -12 dB avant, -3 dB après, 352800 octets
 }
+
+func ExampleMeter() {
+	// un Meter pour le flux avant la chaîne, un autre pour le flux après : l'écart montre ce que fait la chaîne
+	in, out := audioprofile.NewMeter(44100, 2), audioprofile.NewMeter(44100, 2)
+	src := bytes.NewReader(tone(1000, 16384, 4, 2)) // un sinus à −6 dBFS, quatre secondes
+
+	gain := []audioprofile.Band{{Type: audioprofile.Gain, GainDB: -6}}
+	chain := audioprofile.Equalizer(in.Wrap(src), 44100, 2, gain) // Wrap rend le flux tel quel, en le mesurant au passage
+	io.Copy(io.Discard, out.Wrap(chain))
+
+	a, b := in.Snapshot(), out.Snapshot() // lisibles depuis n'importe quel goroutine, sans gêner le flux
+	fmt.Printf("crête : %.0f dBFS en entrée, %.0f dBFS en sortie\n", a.PeakDBFS[0], b.PeakDBFS[0])
+	fmt.Printf("sonie à court terme : %.0f LUFS, puis %.0f LUFS (valable : %v)\n", a.ShortTermLUFS, b.ShortTermLUFS, b.ShortTermValid)
+	freqs := in.SpectrumFreqs() // la fréquence centrale de chaque bande du spectre
+	fmt.Printf("%d bandes, de %.0f Hz à %.0f Hz\n", len(a.SpectrumDBFS), freqs[0], freqs[len(freqs)-1])
+	// Output:
+	// crête : -6 dBFS en entrée, -12 dBFS en sortie
+	// sonie à court terme : -6 LUFS, puis -12 LUFS (valable : true)
+	// 64 bandes, de 21 Hz à 18949 Hz
+}
+
+func ExampleBandsResponse() {
+	// la courbe de l'égaliseur, à tracer sur un analyseur : le gain à chaque fréquence
+	bands := []audioprofile.Band{{Type: audioprofile.Peaking, FreqHz: 1000, GainDB: 6, Q: 1}}
+	r := audioprofile.BandsResponse(44100, bands, []float64{100, 1000, 10000})
+	fmt.Printf("%.1f dB à 1 kHz, %.1f dB à 100 Hz\n", r[1], r[0])
+	// Output: 6.0 dB à 1 kHz, 0.1 dB à 100 Hz
+}

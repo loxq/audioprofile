@@ -51,6 +51,60 @@ Amène la **sonie intégrée** d'un morceau à une cible, par exemple **−14 LU
 - Travaille sur un tampon en mémoire.
 
 
+## Mesure en continu (Meter)
+
+`Meter` mesure un flux au fil de l'eau **sans le modifier** : crête et niveau efficace par canal, sonie momentanée et à court terme, et spectre. Il sert à afficher un vumètre ou un analyseur, ou à surveiller un flux en exploitation (silence, écrêtage, dérive de sonie). Avec un `Meter` avant la chaîne et un autre après, l'écart entre les deux montre ce qu'elle fait : c'est ce que le [panneau de réglage](reglage.md#panneau-de-réglage--serve) affiche.
+
+```go
+func NewMeter(sampleRate, channels int) *Meter
+func (m *Meter) Wrap(src io.Reader) io.Reader
+func (m *Meter) Write(p []byte) (int, error)
+func (m *Meter) Snapshot() MeterSnapshot
+func (m *Meter) SpectrumFreqs() []float64
+
+type MeterSnapshot struct {
+	Frames int64
+
+	PeakDBFS  []float64
+	RMSDBFS   []float64
+	ClipCount int64
+
+	MomentaryLUFS  float64
+	MomentaryValid bool
+	ShortTermLUFS  float64
+	ShortTermValid bool
+
+	SpectrumDBFS []float64
+}
+```
+
+```go
+in, out := audioprofile.NewMeter(44100, 2), audioprofile.NewMeter(44100, 2)
+chain := audioprofile.ApplyProfile(in.Wrap(src), 44100, 2, audioprofile.Rock, 1) // Wrap rend le flux tel quel, mesuré au passage
+processed := out.Wrap(chain)
+
+// plus tard, depuis n'importe quel goroutine : l'instantané ne consomme rien et ne gêne pas le flux
+snap := out.Snapshot()
+```
+
+- **Brancher** : `Wrap(src)` renvoie le flux à l'identique en le mesurant, comme un `io.TeeReader` ; `Write` reçoit les octets (c'est un `io.Writer`, pour `io.MultiWriter`). Les octets peuvent arriver par morceaux de n'importe quelle taille.
+- **Lire** : `Snapshot` se lit depuis n'importe quel goroutine, sans verrou long ni effet sur le flux, et plusieurs lecteurs (plusieurs pages ouvertes) voient les mêmes valeurs. Un instantané est indépendant des précédents.
+- **Niveaux** : en dBFS, 0 étant la pleine échelle d'un sinus. `PeakDBFS` est la crête d'**échantillon** (pas la crête inter-échantillons, *true peak*) sur les 200 dernières ms ; `RMSDBFS` le niveau efficace sur les 300 dernières ms, la fenêtre d'un vumètre. `ClipCount` compte les échantillons à la pleine échelle depuis le début : comparez deux instantanés pour voir un écrêtage récent.
+- **Sonie** : pondération K de l'UIT-R BS.1770, comme `MeasureLoudness`. `MomentaryLUFS` porte sur 400 ms, `ShortTermLUFS` sur 3 s, et chacune n'est valable (`…Valid`) qu'une fois sa fenêtre pleine. Sur un signal stable, elles donnent la sonie intégrée de `MeasureLoudness` à 0,1 LU près. La sonie intégrée (avec portes) n'y est pas : utilisez `LoudnessMeter`.
+- **Spectre** : `SpectrumDBFS` donne le niveau de 64 bandes réparties en échelle logarithmique de 20 Hz à 20 kHz (un peu moins à basse fréquence d'échantillonnage), dont `SpectrumFreqs` donne les fréquences centrales. Il est calculé sur les 4096 dernières trames, mélangées en mono, avec une fenêtre de Hann. Dans une bande, c'est la **plus forte case** de la transformée : un sinus d'amplitude A y lit `20·log10(A)` à 1,4 dB près, et un bruit y lit à plat. Les bandes plus étroites qu'une case (graves) partagent les mêmes cases.
+- **Silence** : une valeur nulle ou pas encore connue vaut `MeterFloorDB` (−120), jamais −Inf ni NaN, pour qu'un instantané s'écrive tel quel en JSON.
+- **Coût** : environ 0,6 ms pour mesurer une seconde de stéréo à 44,1 kHz (mesuré), et 90 µs par instantané, transformée de Fourier comprise, qui n'est refaite que si de nouvelles trames sont arrivées. Un flux et sa page de mesures coûtent moins d'un pour cent d'un cœur.
+- Avec des paramètres invalides (`sampleRate <= 0`, `channels < 1`), un `Meter` ignore ce qu'on lui envoie et ne renvoie que des valeurs de silence.
+
+### Courbe de l'égaliseur
+
+```go
+func BandsResponse(sampleRate int, bands []Band, freqsHz []float64) []float64
+func (s ProfileSettings) EQResponse(sampleRate int, intensity float64, freqsHz []float64) []float64
+```
+
+`BandsResponse` donne le gain (dB) d'une suite de bandes à chacune des fréquences : la réponse de ce qu'appliquerait `Equalizer`. `EQResponse` le donne pour l'égaliseur d'un profil, **à l'intensité demandée et gain automatique compris** (celui d'`ApplyProfileSettings`) : c'est la courbe à tracer sur le spectre. Seule l'égalisation y figure, pas le compresseur, la saturation ni le multibande, qui dépendent du signal. Les fréquences invalides ou au-delà de Nyquist donnent 0 ; une intensité nulle ou NaN donne des zéros.
+
 ## Comparaison A/B à sonie égale
 
 ```go

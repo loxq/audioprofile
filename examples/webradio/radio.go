@@ -62,6 +62,7 @@ type radio struct {
 	cfg      *config.Config
 	pl       live.Pipeline
 	sw       *audioprofile.Switcher
+	out      io.Reader   // le flux traité que lit l'encodeur : le Switcher, ou le Switcher mesuré
 	tuner    *live.Tuner // non nil si le panneau est ouvert
 	admin    *adminClient
 	frame    int
@@ -139,7 +140,18 @@ func start(parent context.Context, o options) (*radio, error) {
 	// profil sans clic (au changement d'émission, par exemple)
 	tracks := &trackSource{ctx: ctx, sched: sched, open: open, frameSize: r.frame, onTrack: r.trackStarted, logf: o.logf}
 	paced := newPacedReader(ctx, tracks, o.rate, o.channels, o.speed)
-	r.sw = audioprofile.NewSwitcher(paced, o.rate, o.channels, build)
+	// avec le panneau, des mesures avant et après la chaîne : vumètres, sonie et spectre du flux qui part vers Icecast
+	var src io.Reader = paced
+	var meterIn, meterOut *audioprofile.Meter
+	if o.panel != "" {
+		meterIn, meterOut = audioprofile.NewMeter(o.rate, o.channels), audioprofile.NewMeter(o.rate, o.channels)
+		src = meterIn.Wrap(paced)
+	}
+	r.sw = audioprofile.NewSwitcher(src, o.rate, o.channels, build)
+	r.out = r.sw // ce que lit l'encodeur
+	if meterOut != nil {
+		r.out = meterOut.Wrap(r.sw)
+	}
 
 	// 4. l'outillage de réglage, à garder en développement
 	if o.panel != "" {
@@ -147,6 +159,7 @@ func start(parent context.Context, o options) (*radio, error) {
 			cancel()
 			return nil, err
 		}
+		r.tuner.SetMeters(meterIn, meterOut)
 		url, stop, err := panel.Serve(o.panel, r.tuner)
 		if err != nil {
 			cancel()
@@ -323,7 +336,7 @@ func (r *radio) encodeOnce() (finished bool, err error) {
 	if err := cmd.Start(); err != nil {
 		return false, err
 	}
-	_, copyErr := io.Copy(stdin, r.sw) // le flux traité, au rythme du temps réel
+	_, copyErr := io.Copy(stdin, r.out) // le flux traité, au rythme du temps réel
 	stdin.Close()
 	waitErr := cmd.Wait()
 	if copyErr == nil { // le Switcher est arrivé à sa fin

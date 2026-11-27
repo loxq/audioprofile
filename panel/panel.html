@@ -8,11 +8,13 @@
 :root {
   --bg: #f6f6f4; --card: #ffffff; --ink: #1d1d1b; --muted: #6a6a66; --line: #dcdcd6;
   --accent: #2d6a4f; --accent-ink: #ffffff; --warn: #b3261e; --ok: #2d6a4f; --track: #d6d6d0;
+  --in: #8a8a84; --out: #2d6a4f; --eq: #b4630a; --grid: #e6e6e0; --vu-low: #3d9a6a; --vu-mid: #d8a617; --vu-high: #c8402f;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #161615; --card: #20201e; --ink: #ececea; --muted: #9a9a94; --line: #34342f;
     --accent: #6cc59a; --accent-ink: #0d1f16; --warn: #ff8a80; --ok: #6cc59a; --track: #3a3a35;
+    --in: #8e8e88; --out: #6cc59a; --eq: #f0a04b; --grid: #2c2c28; --vu-low: #52b886; --vu-mid: #e3b93c; --vu-high: #ee6a58;
   }
 }
 * { box-sizing: border-box; }
@@ -50,6 +52,25 @@ dialog { background: var(--card); color: var(--ink); border: 1px solid var(--lin
 dialog pre { white-space: pre-wrap; background: var(--bg); padding: 10px; border-radius: 6px; max-height: 60vh; overflow: auto; }
 .err-text { color: var(--warn); }
 @media (max-width: 520px) { .row { grid-template-columns: 80px 1fr 78px; } }
+
+#meters { max-width: 1100px; margin: 16px auto 0; padding: 12px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+#meters[hidden] { display: none; }
+#meters .mhead { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+#meters .mhead h2 { margin: 0; }
+#meters .mhead .grow { flex: 1; }
+#meters .mgrid { display: grid; grid-template-columns: minmax(150px, 210px) 1fr; gap: 10px 16px; align-items: stretch; }
+#meters canvas { display: block; width: 100%; background: transparent; }
+#vu { height: 190px; }
+#spectrum { height: 190px; }
+#lufs { grid-column: 1; font-variant-numeric: tabular-nums; }
+#lufs table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+#lufs th { font-weight: 500; color: var(--muted); text-align: right; padding: 1px 0 1px 8px; }
+#lufs th:first-child { text-align: left; padding-left: 0; }
+#lufs td { text-align: right; padding: 1px 0 1px 8px; }
+#lufs td:first-child { text-align: left; padding-left: 0; color: var(--muted); }
+#lufs .delta { color: var(--eq); }
+#meters .stale canvas, #meters.stale canvas { opacity: .45; }
+@media (max-width: 640px) { #meters .mgrid { grid-template-columns: 1fr; } #lufs { grid-column: 1; } }
 </style>
 </head>
 <body>
@@ -65,6 +86,25 @@ dialog pre { white-space: pre-wrap; background: var(--bg); padding: 10px; border
   <span id="status" role="status" aria-live="polite">chargement…</span>
   <button id="yaml">Exporter</button>
 </header>
+<section id="meters" hidden aria-label="Mesures du flux">
+  <div class="mhead">
+    <h2>Mesures</h2><span id="mstatus" class="muted" role="status" aria-live="off">connexion…</span>
+    <span class="grow"></span>
+    <label><input id="m-eq" type="checkbox" checked> courbe de l'égaliseur</label>
+  </div>
+  <div class="mgrid">
+    <div><canvas id="vu" role="img" aria-label="Vumètres : niveau efficace et crête de chaque canal, avant (entrée) et après (sortie) le traitement"></canvas></div>
+    <div><canvas id="spectrum" role="img" aria-label="Spectre du flux avant et après le traitement, avec la courbe de l'égaliseur"></canvas></div>
+    <div id="lufs">
+      <table aria-label="Sonie">
+        <tr><th></th><th>Entrée</th><th>Sortie</th><th>Écart</th></tr>
+        <tr><td>Momentané</td><td id="lufs-in-m">—</td><td id="lufs-out-m">—</td><td id="lufs-d-m" class="delta">—</td></tr>
+        <tr><td>Court terme</td><td id="lufs-in-s">—</td><td id="lufs-out-s">—</td><td id="lufs-d-s" class="delta">—</td></tr>
+      </table>
+      <div class="muted" style="font-size:12px;margin-top:4px">LUFS · écart en LU (sortie − entrée)</div>
+    </div>
+  </div>
+</section>
 <main id="main"></main>
 <dialog id="dlg">
   <h2>Réglages à garder</h2>
@@ -252,6 +292,172 @@ async function loadPreset() {
   return true;
 }
 
+
+// ---------- mesures : vumètres, sonie, spectre (voir MeterFrame côté serveur)
+const FLOOR = -120;          // le serveur envoie -120 pour « silence ou inconnu »
+const VU_RANGE = [-60, 0];   // dBFS affichés par les vumètres
+const SP_RANGE = [-100, 0];  // dBFS affichés par le spectre
+const EQ_SPAN = 24;          // ± dB de l'axe de la courbe de l'égaliseur
+const M = { freqs: null, latest: null, lastAt: 0, es: null, disp: null, ctx: {}, lufsAt: 0, clipAt: { in: 0, out: 0 }, clips: { in: null, out: null } };
+
+function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+function dbToFrac(db, range) { return clamp((db - range[0]) / (range[1] - range[0]), 0, 1); }
+const F_LO = 20, F_HI = 20000;
+function freqToFrac(f) { return clamp(Math.log(f / F_LO) / Math.log(F_HI / F_LO), 0, 1); }
+function fmtLUFS(v) { return v <= FLOOR + 1 ? "—" : v.toFixed(1); }
+function fmtDelta(a, b) { return a <= FLOOR + 1 || b <= FLOOR + 1 ? "—" : (b - a >= 0 ? "+" : "−") + Math.abs(b - a).toFixed(1); }
+
+// Balistique : montée instantanée, descente à vitesse bornée (dB par seconde), jamais sous la cible.
+function fall(disp, target, dt, rate) { return target >= disp ? target : Math.max(target, disp - rate * dt); }
+// Niveau efficace d'un vumètre : lissage exponentiel, un peu plus lent que la crête.
+function smooth(disp, target, dt, tau) { return disp + (target - disp) * (1 - Math.exp(-dt / tau)); }
+
+function initMeters() {
+  const freqs = schema.meterFreqs;
+  if (!freqs || !freqs.length || !window.EventSource) return;
+  $("#meters").hidden = false;
+  M.freqs = freqs;
+  const n = freqs.length, chans = schema.channels || 2;
+  const side = () => ({ rms: new Array(chans).fill(FLOOR), peak: new Array(chans).fill(FLOOR), hold: new Array(chans).fill(FLOOR), holdAt: new Array(chans).fill(0), spec: new Array(n).fill(FLOOR) });
+  M.disp = { in: side(), out: side(), curve: null };
+  M.ctx.vu = $("#vu").getContext ? $("#vu").getContext("2d") : null;
+  M.ctx.sp = $("#spectrum").getContext ? $("#spectrum").getContext("2d") : null;
+  const es = new EventSource("/api/meters");
+  M.es = es;
+  es.onmessage = (e) => { try { M.latest = JSON.parse(e.data); M.lastAt = performance.now(); } catch (err) { /* image illisible : on garde la précédente */ } };
+  es.onerror = () => { $("#mstatus").textContent = "connexion perdue, nouvel essai…"; };
+  requestAnimationFrame(drawMeters);
+}
+
+let lastDraw = 0;
+function drawMeters(now) {
+  requestAnimationFrame(drawMeters);
+  const dt = lastDraw ? Math.min(0.25, (now - lastDraw) / 1000) : 0.016;
+  lastDraw = now;
+  const f = M.latest, stale = !f || now - M.lastAt > 1500;
+  $("#meters").classList.toggle("stale", stale);
+  if (f) $("#mstatus").textContent = stale ? "pas de mesure" : "en direct";
+  if (f) updateDisplay(f, dt, now);
+  drawVU(now);
+  drawSpectrum();
+  if (f && now - M.lufsAt > 100) { M.lufsAt = now; updateLUFS(f); }
+}
+
+function updateDisplay(f, dt, now) {
+  for (const k of ["in", "out"]) {
+    const d = M.disp[k], s = f[k];
+    s.rmsDb.forEach((v, c) => { if (c < d.rms.length) d.rms[c] = smooth(d.rms[c], Math.max(v, FLOOR), dt, 0.1); });
+    s.peakDb.forEach((v, c) => {
+      if (c >= d.peak.length) return;
+      d.peak[c] = fall(d.peak[c], v, dt, 40);
+      if (v >= d.hold[c]) { d.hold[c] = v; d.holdAt[c] = now; }                          // nouvelle crête : on la retient
+      else if (now - d.holdAt[c] > 1500) d.hold[c] = Math.max(v, d.hold[c] - 20 * dt);   // puis elle retombe
+    });
+    s.spectrum.forEach((v, i) => { d.spec[i] = fall(d.spec[i], v, dt, 30); });
+    if (M.clips[k] !== null && s.clips > M.clips[k]) M.clipAt[k] = now; // un écrêtage depuis l'image précédente
+    M.clips[k] = s.clips;
+  }
+  M.disp.curve = f.curve && f.curve.length ? f.curve : null;
+}
+
+function updateLUFS(f) {
+  $("#lufs-in-m").textContent = fmtLUFS(f.in.momentary); $("#lufs-out-m").textContent = fmtLUFS(f.out.momentary);
+  $("#lufs-in-s").textContent = fmtLUFS(f.in.shortTerm); $("#lufs-out-s").textContent = fmtLUFS(f.out.shortTerm);
+  $("#lufs-d-m").textContent = fmtDelta(f.in.momentary, f.out.momentary); $("#lufs-d-s").textContent = fmtDelta(f.in.shortTerm, f.out.shortTerm);
+}
+
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#888"; }
+
+// Ajuste la taille du canvas à son affichage (et à la densité de pixels) ; renvoie les dimensions en pixels CSS.
+function fitCanvas(canvas, ctx) {
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth || 300, h = canvas.clientHeight || 150;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return [w, h];
+}
+
+function drawVU(now) {
+  const ctx = M.ctx.vu, canvas = $("#vu");
+  if (!ctx || !M.disp) return;
+  const [W, H] = fitCanvas(canvas, ctx);
+  const top = 16, bottom = 18, left = 26, plotH = H - top - bottom;
+  const y = (db) => top + plotH * (1 - dbToFrac(db, VU_RANGE));
+  const grid = cssVar("--grid"), muted = cssVar("--muted");
+  ctx.font = "10px system-ui, sans-serif"; ctx.textBaseline = "middle"; ctx.textAlign = "right";
+  for (const db of [0, -6, -12, -20, -30, -40, -60]) {
+    ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(left, Math.round(y(db)) + .5); ctx.lineTo(W, Math.round(y(db)) + .5); ctx.stroke();
+    ctx.fillStyle = muted; ctx.fillText(String(db), left - 4, y(db));
+  }
+  const grad = ctx.createLinearGradient(0, y(VU_RANGE[0]), 0, y(0));
+  grad.addColorStop(0, cssVar("--vu-low")); grad.addColorStop(dbToFrac(-18, VU_RANGE), cssVar("--vu-low"));
+  grad.addColorStop(dbToFrac(-9, VU_RANGE), cssVar("--vu-mid")); grad.addColorStop(dbToFrac(-3, VU_RANGE), cssVar("--vu-high")); grad.addColorStop(1, cssVar("--vu-high"));
+  const groups = [["in", "Entrée"], ["out", "Sortie"]], chans = M.disp.in.rms.length;
+  const gw = (W - left - 8) / groups.length, gap = 6;
+  groups.forEach(([k, label], gi) => {
+    const d = M.disp[k], x0 = left + gi * gw + 4, bw = Math.min(26, (gw - 8 - gap * (chans - 1)) / chans);
+    for (let c = 0; c < chans; c++) {
+      const x = x0 + c * (bw + gap);
+      ctx.fillStyle = grid; ctx.fillRect(x, top, bw, plotH);           // le fond de la jauge
+      ctx.fillStyle = grad; ctx.fillRect(x, y(d.rms[c]), bw, y(VU_RANGE[0]) - y(d.rms[c])); // niveau efficace
+      ctx.globalAlpha = .55; ctx.fillRect(x, y(d.peak[c]), bw, y(VU_RANGE[0]) - y(d.peak[c])); ctx.globalAlpha = 1; // crête
+      ctx.fillStyle = cssVar("--ink"); ctx.fillRect(x, Math.round(y(d.hold[c])), bw, 2);          // maintien de la crête
+    }
+    ctx.fillStyle = now - M.clipAt[k] < 1500 ? cssVar("--vu-high") : grid;  // voyant d'écrêtage
+    ctx.beginPath(); ctx.arc(x0 + 5, top - 8, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = muted; ctx.textAlign = "left"; ctx.fillText(label, x0 + 14, top - 8);
+    ctx.textAlign = "center";
+    for (let c = 0; c < chans; c++) ctx.fillText(chans === 2 ? (c ? "R" : "L") : String(c + 1), x0 + c * (bw + gap) + bw / 2, H - 8);
+  });
+}
+
+function drawSpectrum() {
+  const ctx = M.ctx.sp, canvas = $("#spectrum");
+  if (!ctx || !M.disp) return;
+  const [W, H] = fitCanvas(canvas, ctx);
+  const left = 34, right = 34, top = 18, bottom = 18, pw = W - left - right, ph = H - top - bottom;
+  const X = (f) => left + pw * freqToFrac(f), Y = (db) => top + ph * (1 - dbToFrac(db, SP_RANGE));
+  const grid = cssVar("--grid"), muted = cssVar("--muted"), cIn = cssVar("--in"), cOut = cssVar("--out"), cEq = cssVar("--eq");
+  ctx.font = "10px system-ui, sans-serif"; ctx.lineWidth = 1;
+  // quadrillage : dB (gauche) et fréquences
+  ctx.textBaseline = "middle"; ctx.textAlign = "right";
+  for (let db = SP_RANGE[0]; db <= SP_RANGE[1]; db += 20) {
+    ctx.strokeStyle = grid; ctx.beginPath(); ctx.moveTo(left, Math.round(Y(db)) + .5); ctx.lineTo(left + pw, Math.round(Y(db)) + .5); ctx.stroke();
+    ctx.fillStyle = muted; ctx.fillText(String(db), left - 4, Y(db));
+  }
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]) {
+    ctx.strokeStyle = grid; ctx.beginPath(); ctx.moveTo(Math.round(X(f)) + .5, top); ctx.lineTo(Math.round(X(f)) + .5, top + ph); ctx.stroke();
+    ctx.fillStyle = muted; ctx.fillText(f >= 1000 ? f / 1000 + "k" : String(f), X(f), top + ph + 4);
+  }
+  const path = (vals) => { vals.forEach((v, i) => { const x = X(M.freqs[i]), yy = Y(Math.max(v, SP_RANGE[0])); i ? ctx.lineTo(x, yy) : ctx.moveTo(x, yy); }); };
+  // spectre de l'entrée : aire grise ; de la sortie : aire et trait de la couleur d'accent
+  ctx.beginPath(); path(M.disp.in.spec); ctx.lineTo(X(M.freqs[M.freqs.length - 1]), Y(SP_RANGE[0])); ctx.lineTo(X(M.freqs[0]), Y(SP_RANGE[0])); ctx.closePath();
+  ctx.globalAlpha = .28; ctx.fillStyle = cIn; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.beginPath(); path(M.disp.out.spec); ctx.lineTo(X(M.freqs[M.freqs.length - 1]), Y(SP_RANGE[0])); ctx.lineTo(X(M.freqs[0]), Y(SP_RANGE[0])); ctx.closePath();
+  ctx.globalAlpha = .18; ctx.fillStyle = cOut; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.beginPath(); path(M.disp.out.spec); ctx.strokeStyle = cOut; ctx.lineWidth = 2; ctx.stroke();
+  ctx.beginPath(); path(M.disp.in.spec); ctx.strokeStyle = cIn; ctx.lineWidth = 1; ctx.stroke();
+  // courbe de l'égaliseur : son propre axe (± EQ_SPAN dB, 0 dB au milieu), à droite
+  const showEq = $("#m-eq").checked && M.disp.curve;
+  if (showEq) {
+    const yc = (g) => top + ph / 2 - (clamp(g, -EQ_SPAN, EQ_SPAN) / EQ_SPAN) * (ph / 2);
+    ctx.setLineDash([5, 4]); ctx.strokeStyle = cEq; ctx.lineWidth = 2; ctx.beginPath();
+    M.disp.curve.forEach((g, i) => { const x = X(M.freqs[i]); i ? ctx.lineTo(x, yc(g)) : ctx.moveTo(x, yc(g)); });
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = cEq; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    for (const g of [EQ_SPAN, EQ_SPAN / 2, 0, -EQ_SPAN / 2, -EQ_SPAN]) ctx.fillText((g > 0 ? "+" : g < 0 ? "−" : "") + Math.abs(g), left + pw + 4, yc(g));
+  }
+  // légende
+  ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  let lx = left + 6; const ly = top + 9;
+  for (const [txt, col, dash] of [["Entrée", cIn, false], ["Sortie", cOut, false], ["Égaliseur (dB)", cEq, true]]) {
+    if (dash && !showEq) continue;
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash(dash ? [4, 3] : []); ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(lx + 16, ly); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = muted; ctx.fillText(txt, lx + 20, ly); lx += 20 + ctx.measureText(txt).width + 14;
+  }
+}
+
 async function init() {
   [schema, state] = await Promise.all([fetch("/api/schema").then((r) => r.json()), fetch("/api/state").then((r) => r.json())]);
   const I = schema.intensity;
@@ -273,6 +479,7 @@ async function init() {
   $("#close").addEventListener("click", () => { $("#dlg").close(); $("#copy").textContent = "Copier"; });
   render();
   setStatus("prêt", "ok");
+  initMeters();
 }
 init().catch((e) => setStatus("erreur : " + e, "err"));
 </script>

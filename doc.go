@@ -40,6 +40,11 @@
 // cible sous un plafond de crêtes. [MatchGains], [ApplyGain] et [Alternate] comparent l'original et le traité à sonie
 // égale, sans que le plus fort l'emporte.
 //
+// [Meter] mesure un flux en continu, sans le modifier : crête et niveau efficace par canal, sonie momentanée et à court
+// terme, spectre en 64 bandes. Un Meter avant la chaîne et un après montrent ce qu'elle fait : c'est la base d'un
+// vumètre, d'un analyseur, ou de la surveillance d'une radio. [BandsResponse] et [ProfileSettings.EQResponse] donnent
+// la courbe de l'égaliseur, à tracer sur ce spectre.
+//
 // # Régler en direct
 //
 // [Switcher] est un flux dont la chaîne se remplace en cours de lecture, sans clic : la nouvelle chaîne est mise en

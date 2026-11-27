@@ -258,6 +258,12 @@ Options :
 	var proc io.Reader
 	stopWatch := func() {}
 	if *watch || *serve != "" {
+		// avec le panneau, des mesures avant et après la chaîne : vumètres, sonie et spectre
+		var meterIn, meterOut *audioprofile.Meter
+		if *serve != "" {
+			meterIn, meterOut = audioprofile.NewMeter(*rate, *channels), audioprofile.NewMeter(*rate, *channels)
+			src = meterIn.Wrap(src)
+		}
 		sw := audioprofile.NewSwitcher(src, *rate, *channels, process)
 		if *watch {
 			logf := func(format string, args ...any) { fmt.Fprintf(stderr, format+"\n", args...) }
@@ -269,6 +275,7 @@ Options :
 			if err != nil {
 				return err
 			}
+			pn.SetMeters(meterIn, meterOut)
 			url, stopServe, err := panel.Serve(*serve, pn)
 			if err != nil {
 				return fmt.Errorf("-serve : %w", err)
@@ -278,6 +285,9 @@ Options :
 		}
 		defer stopWatch()
 		proc = sw
+		if meterOut != nil {
+			proc = meterOut.Wrap(sw)
+		}
 	} else {
 		proc = process(src)
 	}

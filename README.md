@@ -83,13 +83,14 @@ Si `sampleRate <= 0`, le flux est renvoyé tel quel. Un état de filtre est tenu
 | [`Chorus`, `Flanger`](docs/briques.md#chorus-et-flanger), [`Delay`](docs/briques.md#delay-écho), [`Reverb`](docs/briques.md#réverbération) | modulation, écho, réverbération |
 | [`StereoWidth`](docs/briques.md#élargisseur-stéréo), [`Crossfeed`](docs/briques.md#crossfeed-pour-casque) | image stéréo : élargissement mid/side, crossfeed pour casque |
 | [`MeasureLoudness`, `NormalizeLoudness`, `Alternate`](docs/mesure.md) | sonie EBU R128, normalisation, comparaison A/B à sonie égale |
+| [`Meter`](docs/mesure.md#mesure-en-continu-meter) | mesure d'un flux en continu : vumètres, sonie, spectre, pour un affichage ou la surveillance |
 | [`Switcher`](docs/streaming.md#le-switcher) | changement de chaîne **à chaud**, sans clic |
 
 ## Régler et déboguer
 
 - **[La commande](docs/cli.md)** : un profil ou un ampli, des effets en ligne (`-fx`), une comparaison A/B à sonie égale (`-ab`), la mesure et le réglage de la sonie (`-loudness`, `-target-lufs`).
 - **[Un fichier de réglages YAML](docs/reglage.md)** (`-config`) : on change les profils, les amplis et les valeurs par défaut des effets sans toucher au code. Avec `-watch`, le fichier est **rechargé à chaud** : éditer, enregistrer, écouter.
-- **[Un panneau web](docs/reglage.md#panneau-de-réglage--serve)** (`-serve`) : des curseurs sur le profil, l'ampli et les effets, appliqués en cours de lecture, avec bascule A/B et export du réglage en YAML.
+- **[Un panneau web](docs/reglage.md#panneau-de-réglage--serve)** (`-serve`) : des curseurs sur le profil, l'ampli et les effets, appliqués en cours de lecture, avec bascule A/B, export du réglage en YAML, et en direct les **vumètres, la sonie et le spectre avant / après** avec la courbe de l'égaliseur par-dessus.
 
 ```sh
 ffmpeg -loglevel error -stream_loop -1 -i musique.mp3 -f s16le -ar 44100 -ac 2 - \

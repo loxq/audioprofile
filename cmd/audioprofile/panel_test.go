@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"math"
@@ -89,3 +90,85 @@ func TestCLIServeFlagErrors(t *testing.T) {
 }
 
 // Les valeurs de départ d'un compresseur activé depuis la page sont celles du fichier de configuration.
+
+// Avec -serve, la page reçoit des mesures avant et après la chaîne : le niveau de l'entrée, celui de la sortie, les bandes
+// du spectre, et la courbe de l'égaliseur du profil en vigueur.
+func TestCLIServeMeters(t *testing.T) {
+	const frames = 4 * 44100
+	in := pcm(1000, frames, 2) // sinusoïde d'amplitude 8000
+	g := &gatedReader{data: in, cut: 2 * 44100 * 4, paused: make(chan struct{}), release: make(chan struct{})}
+	var stdout bytes.Buffer
+	var stderr syncBuf
+	done := make(chan error, 1)
+	go func() { done <- run([]string{"-serve", "127.0.0.1:0", "-profile", "rock"}, g, &stdout, &stderr) }()
+	var url string
+	waitFor(t, "adresse du panneau", func() bool {
+		url = regexp.MustCompile(`http://\S+/`).FindString(stderr.String())
+		return url != ""
+	})
+	<-g.paused // 2 s de son sont passées : les mesures sont figées sur ce qu'elles ont vu
+
+	var sc panel.Schema
+	resp, err := http.Get(url + "api/schema")
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.NewDecoder(resp.Body).Decode(&sc)
+	resp.Body.Close()
+	if len(sc.MeterFreqs) != 64 {
+		t.Fatalf("bandes annoncées : %d", len(sc.MeterFreqs))
+	}
+
+	resp, err = http.Get(url + "api/meters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("type : %q", ct)
+	}
+	var f panel.MeterFrame
+	br := bufio.NewReader(resp.Body)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
+			if err := json.Unmarshal([]byte(data), &f); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	want := 20 * math.Log10(8000.0/32768) // −12,25 dBFS
+	if math.Abs(f.In.PeakDB[0]-want) > 0.2 {
+		t.Errorf("entrée : crête %.2f dBFS, attendu %.2f", f.In.PeakDB[0], want)
+	}
+	if f.Out.PeakDB[0] == f.In.PeakDB[0] || math.IsNaN(f.Out.PeakDB[0]) || f.Out.PeakDB[0] < -60 {
+		t.Errorf("sortie : crête %.2f dBFS (le rock modifie le niveau, il n'est pas muet)", f.Out.PeakDB[0])
+	}
+	if len(f.In.Spectrum) != 64 || len(f.Out.Spectrum) != 64 || len(f.Curve) != 64 {
+		t.Errorf("bandes : %d, %d et %d points de courbe", len(f.In.Spectrum), len(f.Out.Spectrum), len(f.Curve))
+	}
+	// le sinus de 1 kHz domine le spectre d'entrée, dans la bonne bande
+	best := 0
+	for i, v := range f.In.Spectrum {
+		if v > f.In.Spectrum[best] {
+			best = i
+		}
+	}
+	if fr := sc.MeterFreqs[best]; fr < 900 || fr > 1110 {
+		t.Errorf("pic du spectre à %.0f Hz, attendu ~1000", fr)
+	}
+	if f.In.MomentaryLUFS < -40 || f.In.MomentaryLUFS > -10 {
+		t.Errorf("sonie de l'entrée : %.1f LUFS", f.In.MomentaryLUFS)
+	}
+	close(g.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(stdout.Bytes()) != len(in) {
+		t.Errorf("%d octets, attendu %d : la mesure ne doit pas changer la longueur du flux", len(stdout.Bytes()), len(in))
+	}
+}
