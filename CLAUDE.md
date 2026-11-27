@@ -10,7 +10,7 @@ Conséquences à garder en tête à chaque changement :
 
 - **L'API est le produit.** Un nom, une signature ou un message d'erreur est lu par des développeurs qui n'ont pas notre contexte. Pas d'état global, pas de goroutine cachée, pas d'effet de bord à l'import, pas d'écriture sur stdout/stderr dans un paquet (on renvoie des erreurs ou on prend un `Logf`).
 - **Peu de dépendances.** La racine, `fx` et `panel` n'en ont aucune ; seule `config` tire `gopkg.in/yaml.v3`. N'en ajoute pas sans en parler. Les dépendances vont dans un seul sens : `cmd` → `live` → (`panel`, `config`, `fx`) → racine. `panel` ne sait pas ce que veut dire un réglage (c'est `live.Tuner`, un `panel.Backend`).
-- **Tout est public** (`fx`, `config`, `panel`, `live`) : pas de `internal/`, parce que le projet qui importe la lib doit pouvoir monter le panneau, charger un fichier de réglages, etc.
+- **Tout est public** (`fx`, `config`, `panel`, `live`) : pas de `internal/` pour le code, parce que le projet qui importe la lib doit pouvoir monter le panneau, charger un fichier de réglages, etc. Seul `internal/docscheck`, qui ne contient que des tests de documentation, est privé.
 - La carte des paquets est dans [README.md](README.md) et [docs/streaming.md](docs/streaming.md).
 
 ## Façon de travailler
@@ -44,14 +44,15 @@ Les tests s'appuient sur des signaux synthétiques et **mesurent** (gain à une 
 
 - [README.md](README.md) reste court (démarrage rapide, tableau des briques, renvois) ; le détail est dans `docs/`, une section `##` par brique dans [docs/briques.md](docs/briques.md).
 - Un changement de comportement ou d'API met à jour la doc dans le même commit.
-- **Tout snippet Go de la doc doit compiler** : compile-le dans un fichier temporaire hors du dépôt (ou un `Example…` testé) avant de le publier. Après un déplacement de sections, vérifie que chaque lien relatif et chaque ancre existe encore.
+- **Le test `internal/docscheck` garde la doc honnête** (`go test ./internal/docscheck`, ~2 s) : liens et ancres, compilation de chaque bloc Go, signatures et types montrés identiques au code, blocs YAML valides. Il échoue si un exemple invente un champ ou si un lien casse : lance-le après tout changement de doc ou d'API, et corrige la doc plutôt que d'affaiblir le test. Un bloc volontairement incomplet se marque `<!-- doccheck:skip -->` juste avant son ouverture (à garder rare).
 - Ne dis jamais d'un réglage ou d'un effet qu'il « sonne bien » : les réglages sont vérifiés **par mesure**, jamais à l'oreille (c'est écrit dans [docs/limites.md](docs/limites.md)). L'oreille est celle du mainteneur.
 
 ## Pièges déjà rencontrés
 
 Des erreurs réelles, pour ne pas les refaire :
 
-- **Un champ inventé dans un exemple** (`ReverbSettings.Room` au lieu de `RoomSize`) : lis la déclaration du type avant d'écrire un exemple, puis compile-le.
+- **Un champ inventé dans un exemple** (`ReverbSettings.Room` au lieu de `RoomSize`) : lis la déclaration du type avant d'écrire un exemple ; `internal/docscheck` l'attrape maintenant.
+- **Un exemple jamais chargé** : le fichier `audioprofile.example.yaml` annonçait qu'on pouvait ne changer que la 1re bande d'un multibande, alors que la configuration était refusée (une liste plus courte que le profil est invalide). Tout exemple doit être exécuté ou validé par un test.
 - **Une affirmation fausse dans la doc** (« seuls `config` et `cmd` ont une dépendance externe » : `live` aussi, via `config`) : toute affirmation vérifiable (dépendances, valeurs mesurées, comportements) se vérifie par une commande (`go list -deps`, un test), pas de mémoire.
 - **Des scripts d'édition qui touchent le mauvais endroit** : une recherche de sous-chaîne (`"\tif *ab {"`) trouvait aussi une occurrence imbriquée et dupliquait du code. Préfère l'outil d'édition ; avec un script, vérifie que le motif est unique (`assert count == 1`) et relis le résultat (`git diff`).
 - **Un test faux à cause d'une hypothèse sur le son** : un profil « de test » qui contenait aussi compresseur et saturation, alors que le test attendait un simple gain. Pour isoler un étage, construis un profil qui n'a que cet étage.
