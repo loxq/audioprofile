@@ -22,6 +22,11 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 syste
 header { position: sticky; top: 0; z-index: 5; background: var(--card); border-bottom: 1px solid var(--line);
   padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
 header h1 { font-size: 15px; margin: 0; font-weight: 650; }
+/* chaque réglage de l'en-tête sur une seule ligne : libellé, contrôle, valeur */
+header label { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+header input[type=range] { width: 150px; }
+header output { min-width: 3ch; text-align: right; font-variant-numeric: tabular-nums; }
+[hidden] { display: none !important; } /* un display posé par le style ne doit pas annuler l'attribut hidden */
 main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 14px;
   grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); align-items: start; }
 section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
@@ -32,7 +37,7 @@ h3 { font-size: 13px; margin: 10px 0 4px; display: flex; align-items: center; ga
 .row { display: grid; grid-template-columns: 96px 1fr 84px; gap: 8px; align-items: center; margin: 3px 0; }
 .row label { color: var(--muted); font-size: 13px; }
 .row .val { display: flex; align-items: center; gap: 4px; }
-.row .val input { width: 62px; }
+.row .val input { width: 70px; }
 .row .val span { color: var(--muted); font-size: 12px; min-width: 22px; }
 input[type=range] { width: 100%; accent-color: var(--accent); }
 input[type=number], select { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 3px 5px; font: inherit; }
@@ -53,7 +58,7 @@ dialog pre { white-space: pre-wrap; background: var(--bg); padding: 10px; border
 .err-text { color: var(--warn); }
 @media (max-width: 520px) { .row { grid-template-columns: 80px 1fr 78px; } }
 
-#meters { max-width: 1100px; margin: 16px auto 0; padding: 12px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+#meters { width: calc(100% - 32px); max-width: 1068px; margin: 16px auto 0; padding: 12px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
 #meters[hidden] { display: none; }
 #meters .mhead { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
 #meters .mhead h2 { margin: 0; }
