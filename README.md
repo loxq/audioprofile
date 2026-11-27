@@ -113,7 +113,7 @@ url, stop, _ := panel.Serve("127.0.0.1:8080", tuner) // le panneau, à garder en
 defer stop()
 ```
 
-Détails, paquets et conseils pour la production : [Dans un programme de streaming](docs/streaming.md).
+Détails, paquets et conseils pour la production : [Dans un programme de streaming](docs/streaming.md). Pour une **webradio Go → Icecast**, un exemple complet et testé montre où s'intercaler entre le décodeur et l'encodeur, avec un profil par émission : [examples/webradio](examples/webradio/README.md).
 
 ## Structure du dépôt
 
@@ -125,6 +125,7 @@ panel/             panneau de réglage web
 live/              Pipeline, rechargement à chaud (Watch), Tuner (panneau branché sur un Switcher)
 cmd/audioprofile/  la commande de test
 docs/              la documentation détaillée
+examples/webradio/  une webradio Go → Icecast : playlist, décodage, traitement par émission, encodage, annonce des titres
 ```
 
 ## Documentation

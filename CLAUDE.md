@@ -12,6 +12,7 @@ Conséquences à garder en tête à chaque changement :
 - **Peu de dépendances.** La racine, `fx` et `panel` n'en ont aucune ; seule `config` tire `gopkg.in/yaml.v3`. N'en ajoute pas sans en parler. Les dépendances vont dans un seul sens : `cmd` → `live` → (`panel`, `config`, `fx`) → racine. `panel` ne sait pas ce que veut dire un réglage (c'est `live.Tuner`, un `panel.Backend`).
 - **Tout est public** (`fx`, `config`, `panel`, `live`) : pas de `internal/` pour le code, parce que le projet qui importe la lib doit pouvoir monter le panneau, charger un fichier de réglages, etc. Seul `internal/docscheck`, qui ne contient que des tests de documentation, est privé.
 - La carte des paquets est dans [README.md](README.md) et [docs/streaming.md](docs/streaming.md).
+- **Le cas d'usage visé est une webradio Go → Icecast** : un programme qui décode déjà des mp3 normalisés, ré-encode et pousse sur Icecast, et veut un étage de traitement du son **entre décodeur et encodeur**. [examples/webradio](examples/webradio/README.md) en est l'exemple, testé de bout en bout (avec ffmpeg, contre un faux Icecast) ; adapte-le quand l'API de `live`, `panel` ou `config` change, et pense à ce cas (flux continu entre morceaux, profil par émission, format fixe) quand tu conçois une fonctionnalité.
 
 ## Façon de travailler
 

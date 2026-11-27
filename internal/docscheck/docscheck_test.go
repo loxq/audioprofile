@@ -60,6 +60,15 @@ func loadMarkdown(t *testing.T) []*mdFile {
 	for _, d := range docs {
 		paths = append(paths, "docs/"+filepath.Base(d))
 	}
+	examples, err := filepath.Glob(filepath.Join(root, "examples", "*", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(examples)
+	for _, e := range examples {
+		rel, _ := filepath.Rel(root, e)
+		paths = append(paths, filepath.ToSlash(rel))
+	}
 	var out []*mdFile
 	for _, p := range paths {
 		data, err := os.ReadFile(filepath.Join(root, p))

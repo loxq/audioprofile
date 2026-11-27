@@ -1,4 +1,5 @@
-// Package docscheck ne contient que des tests : il vérifie que la documentation (README.md et docs/) ne ment pas.
+// Package docscheck ne contient que des tests : il vérifie que la documentation (README.md, docs/ et les README des
+// exemples) ne ment pas.
 //
 //   - tous les liens relatifs pointent vers un fichier qui existe, et toutes les ancres vers un titre qui existe ;
 //   - chaque bloc de code Go compile (programme complet ou fragment) ;

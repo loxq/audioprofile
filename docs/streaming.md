@@ -43,6 +43,23 @@ defer stop()
 - `live.Watch` recharge le fichier quand il change ; `panel.Serve` ouvre le panneau. Les deux passent par `Switcher.Swap`. Ils sont exclusifs dans la commande (le panneau et le fichier se corrigeraient mutuellement), pas dans la bibliothèque : à vous de décider.
 - Le serveur du panneau n'a pas de mot de passe. Ne l'écoutez que sur une adresse de bouclage (`127.0.0.1`) ; voir [Régler en direct](reglage.md#panneau-de-réglage--serve) pour ce qu'il refuse.
 
+## Dans une webradio (Go → Icecast)
+
+Si votre programme décode déjà des fichiers et ré-encode vers Icecast, l'étage de traitement s'insère **entre le décodeur et l'encodeur**, là où le son est du PCM :
+
+```
+planning ──▶ décodage ──▶ [ Switcher : profil + effets ] ──▶ encodage ──▶ Icecast
+                                     ▲
+              au début de chaque morceau : Swap vers le profil de l'émission
+```
+
+- **Un seul flux continu** : fournissez au `Switcher` un lecteur unique qui enchaîne les morceaux décodés, pas un lecteur par fichier. L'AGC, le compresseur et le limiteur gardent ainsi leur état d'un morceau à l'autre, et rien n'est vidé à chaque fin de fichier.
+- **Un profil par émission** : au changement de morceau ou d'émission, `Switcher.Swap` (avec `live.Pipeline.Build`) change de chaîne sans clic ; un profil identique ne coûte rien.
+- **Un format fixe** : la bibliothèque ne rééchantillonne pas. Des fichiers de même fréquence d'échantillonnage et de même nombre de canaux, décodés en s16le, sont ce qu'il faut.
+- **La cadence** : le flux doit partir au rythme du temps réel (un décodeur lit bien plus vite que la musique ne passe). L'exemple le fait avant le traitement.
+
+Un exemple complet, testé, avec ffmpeg, un vrai protocole Icecast et l'annonce des titres : [examples/webradio](../examples/webradio/README.md).
+
 ## Le Switcher
 
 `NewSwitcher(src, rate, channels, build)` renvoie un flux dont la chaîne se remplace à chaud avec `Swap(build)`.
