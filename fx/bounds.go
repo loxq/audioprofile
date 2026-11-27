@@ -1,13 +1,8 @@
-package main
+package fx
 
-import (
-	"math"
-
-	"github.com/loxq/audioprofile/internal/panel"
-)
-
-// Les bornes des curseurs du panneau de réglage (-serve) pour les effets de -fx : celles où le réglage a du sens.
-// La validation, elle, reste celle de l'effet (une valeur tapée hors du curseur est acceptée si l'effet l'accepte).
+// Plages utiles des curseurs, unités et types des paramètres, appliquées aux définitions au chargement. Un test
+// vérifie qu'aucun paramètre n'y manque et que les défauts et les extrémités des plages sont acceptés par la
+// validation de l'effet.
 
 // bound donne les bornes du curseur d'un paramètre d'effet.
 type bound struct {
@@ -15,8 +10,7 @@ type bound struct {
 	log    bool
 }
 
-// fxBounds : bornes des curseurs des paramètres de -fx. Un test vérifie qu'aucun paramètre n'y manque et que
-// les défauts et les extrémités des curseurs sont acceptés par la validation de l'effet.
+// fxBounds : plage utile de chaque paramètre.
 var fxBounds = map[string]map[string]bound{
 	"hpf":       {"freq": {20, 2000, true}, "order": {1, 8, false}},
 	"lpf":       {"freq": {200, 20000, true}, "order": {1, 8, false}},
@@ -52,31 +46,15 @@ func fxUnit(fx, key string) string {
 	return fxUnits[key]
 }
 
-// fxSchemas décrit les effets de -fx à la page : paramètres, valeurs par défaut, bornes des curseurs.
-func fxSchemas() []panel.FXSchema {
-	var out []panel.FXSchema
-	for _, d := range fxDefs {
-		fs := panel.FXSchema{Name: d.name, Doc: d.doc}
-		for _, p := range d.params {
-			b := fxBounds[d.name][p.key]
-			f := panel.NumField(p.key, p.key, fxUnit(d.name, p.key), b.lo, b.hi, p.def, b.log, isIntParam(p.key))
-			f.Bool = d.name == "delay" && p.key == "pingpong"
-			f.Required, f.Doc = p.required, p.doc
-			if p.required { // un effet ajouté depuis le panneau doit être valide : valeur de départ audible
-				f.Def = math.Min(math.Max(1000, b.lo), b.hi)
-			}
-			fs.Params = append(fs.Params, f)
+func init() {
+	for i := range defs {
+		for j := range defs[i].Params {
+			p := &defs[i].Params[j]
+			b := fxBounds[defs[i].Name][p.Key]
+			p.Min, p.Max, p.Log = b.lo, b.hi, b.log
+			p.Unit = fxUnit(defs[i].Name, p.Key)
+			p.Int = p.Key == "order" || p.Key == "voices" || p.Key == "bits"
+			p.Bool = defs[i].Name == "delay" && p.Key == "pingpong"
 		}
-		out = append(out, fs)
 	}
-	return out
-}
-
-// isIntParam indique si le paramètre est un nombre entier (voix, ordre, bits).
-func isIntParam(key string) bool {
-	switch key {
-	case "order", "voices", "bits":
-		return true
-	}
-	return false
 }

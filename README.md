@@ -1007,14 +1007,38 @@ L'outil refuse de lire sur un terminal sans pipe ni redirection, et d'écrire du
 
 ## Structure du dépôt
 
+audioprofile est une **bibliothèque** de briques de traitement audio composables, avec quelques préréglages, et l'outillage pour les régler et les déboguer. Chaque paquet est importable.
+
 ```
-.                       paquet audioprofile : la bibliothèque (traitements, profils, Switcher, mesure de sonie)
-cmd/audioprofile/       la commande : options, effets -fx (fx.go), fichier de réglages (config.go),
-                        rechargement à chaud (watch.go), liaison avec le panneau (panel.go)
-internal/panel/         le panneau de réglage : serveur HTTP, page embarquée (panel.html), schéma des curseurs
+.                  paquet audioprofile : les traitements (égaliseur, dynamique, effets, ampli, profils), le
+                   Switcher (changement de chaîne à chaud) et la mesure de sonie. Aucune dépendance externe.
+fx/                registre des effets par nom : fx.Parse("delay:time=300"), paramètres, bornes, validation
+config/            fichier de réglages YAML : charger, valider, fusionner avec les valeurs par défaut, écrire
+panel/             panneau de réglage web : serveur HTTP, page embarquée, types et schéma des curseurs
+live/              assemblage pour régler en direct : Pipeline (la chaîne demandée), Watch (rechargement du
+                   fichier), Tuner (panneau branché sur un Switcher)
+cmd/audioprofile/  la commande de test : options, comparaison A/B, mesure de sonie, -serve, -watch
 ```
 
-`internal/panel` ne dépend que de la bibliothèque. Il ne sait pas ce que veut dire un réglage : la commande lui fournit un `Backend` (schéma, état, `Apply`, `Preset`, `Export`) qui vérifie les états et change la chaîne du `Switcher`. Le paquet est interne : son interface peut encore changer.
+Les dépendances vont dans un seul sens : `cmd` → `live` → (`panel`, `config`, `fx`) → `audioprofile`. `panel` ne connaît que la bibliothèque : il ne sait pas ce que veut dire un réglage, c'est `live.Tuner` (un `panel.Backend`) qui vérifie les états et change la chaîne. `config` et `fx` ne dépendent que de la bibliothèque (`config` utilise `fx` pour les valeurs par défaut des effets). La seule dépendance externe est `gopkg.in/yaml.v3`, tirée par `config` (donc par `live` et `cmd`) : importer `audioprofile`, `fx` ou `panel` n'ajoute rien à votre binaire.
+
+### Dans un programme de streaming
+
+Les mêmes pièces que la commande, sans la commande : le flux traité est un `io.Reader`, et le panneau règle la chaîne pendant qu'il coule.
+
+```go
+cfg, _ := config.Load("reglages.yaml") // "" ou nil : les valeurs par défaut
+pl := live.Pipeline{Profile: "rock", Intensity: 1, Rate: 44100, Channels: 2, FX: []string{"delay:time=300"}}
+build, _ := pl.Build(cfg)
+
+sw := audioprofile.NewSwitcher(src, pl.Rate, pl.Channels, build) // le flux traité : lire sw
+tuner, _ := live.NewTuner(cfg, pl, sw)
+url, stop, _ := panel.Serve("127.0.0.1:8080", tuner) // le panneau, à garder en développement
+defer stop()
+// ou : stop, _ := live.Watch("reglages.yaml", sw, pl, live.WatchOptions{Logf: log.Printf})
+```
+
+En production, on peut ne garder que `audioprofile.ApplyProfile` ou une chaîne fixe ; le panneau, `Watch` et `config` ne sont là que pour régler et déboguer. `fx.Parse` sert aussi à construire une chaîne d'effets depuis un texte ou une configuration de l'application.
 
 ## Tests
 
@@ -1054,10 +1078,13 @@ Les tests s'appuient sur des signaux synthétiques (sinus) et mesurent le gain r
 | `stereo_test.go` | côté multiplié par la largeur et milieu intact, basses (60 Hz) laissées au centre, `G + D` conservé (à 1 LSB), largeur 0 = mono au-dessus de 200 Hz, identité (largeur 1, NaN, mono, 3 canaux, fréquence nulle), plafonnement à `MaxWidth`, aucun écrêtage net, lecture fragmentée identique |
 | `profiles_test.go` | noms et `ParseProfile`, identité de `Flat` et de l'intensité nulle, pic à 0 dB, forme des courbes, niveau des profils avec effets, aucun écrêtage à −3 dBFS sur tout le spectre, y compris à intensité exagérée (2 et 3), effet croissant et plafonné au-delà de 1 |
 | `switcher_test.go` | sans changement, le flux est exactement la chaîne (lectures d'un octet, d'une moitié) ; changement vers la même chaîne imperceptible (rock, radio-hits, tube : écart < 1,2 % de la pleine échelle) ; vers une autre chaîne : ancienne à l'identique jusqu'au changement, nouvelle après le fondu de 30 ms, pas de saut ; longueur conservée (avant la première lecture, dès le premier bloc, pendant un fondu, près de la fin, deux changements) ; chaîne vide ; erreur de la source ; `Swap` concurrent (`-race`) et historique borné |
-| `cmd/audioprofile/config_test.go` | fichier vide = valeurs par défaut ; **`-dump-config` relu redonne exactement les réglages** (tous les profils et amplis, avec ou sans surcharges) ; surcharge partielle fusionnée champ à champ, `enabled: false`, profils nouveaux et `base` ; toutes les erreurs (clés inconnues, valeurs hors bornes, NaN, fichier absent) ; valeurs par défaut des effets ; commande de bout en bout |
-| `cmd/audioprofile/watch_test.go` | rechargement après changement stable, contenu identique ignoré, fichier invalide ou refusé signalé sans rien changer, correction prise en compte, fichier qui disparaît un instant ; bout en bout (amplitude avant et après), fichier invalide en route, erreurs d'options, `-watch` sans changement = même flux que sans `-watch` |
-| `cmd/audioprofile/panel_test.go` | chaque paramètre d'effet a ses bornes, extrémités des curseurs acceptées par la validation de l'effet ; **tout profil, ampli et effet est accepté tel que la page le reçoit** ; état de départ de la ligne de commande ; `PUT` qui change le son en cours de flux ; refus (gain, fréquence, type, effet ou paramètre inconnu…) sans rien changer ; aperçu et export YAML relus à l'identique ; `-serve` de bout en bout et erreurs d'options |
-| `internal/panel/*_test.go` | routes, types de contenu, champs inconnus, corps trop gros, refus de l'hôte avec une erreur renvoyée telle quelle, origine étrangère, rebond DNS (`Host`), arrêt du serveur ; aller-retour d'un profil par le format de la page **sans changer le son**, JSON sans perte (étage absent = `null`) ; bornes saines des curseurs à 3 fréquences d'échantillonnage |
+| `config/config_test.go` | fichier vide = valeurs par défaut ; **`Dump` relu redonne exactement les réglages** (tous les profils et amplis, avec ou sans surcharges) ; surcharge partielle fusionnée champ à champ, `enabled: false`, profils nouveaux et `base` ; toutes les erreurs (clés inconnues, valeurs hors bornes, NaN, fichier absent) ; valeurs par défaut des effets ; valeurs de départ des étages ; `MarshalProfile` et `MarshalAmp` relus à l'identique |
+| `fx/fx_test.go` | chaque paramètre a ses bornes et son type ; **extrémités de chaque plage acceptées par la validation de l'effet** ; `Lookup`, `Names`, `Listing` ; `Parse` (casse, espaces, toutes les erreurs) ; `New` avec valeurs par défaut du fichier ; chaque effet validé et appliqué sans changer la longueur |
+| `live/*_test.go` | `Pipeline.Build` (chaîne vide, profil = `ApplyProfile`, ampli prioritaire, baffle, réglages et défauts du fichier, toutes les erreurs) ; `Watch` de bout en bout (rechargement, fichier invalide, arrêt) ; `Tuner` : tout profil, ampli et effet accepté tel que la page le reçoit, état de départ, `PUT` qui change le son, refus sans rien changer, export YAML relu à l'identique, valeurs de départ communes avec le fichier |
+| `cmd/audioprofile/config_test.go` | `-config` : fichier vide sans effet, profil neuf utilisable et listé, ampli et défauts de `-fx`, erreurs, `-dump-config` |
+| `cmd/audioprofile/watch_test.go` | `-watch` de bout en bout (amplitude avant et après un rechargement), fichier invalide en route, erreurs d'options, sans changement = même flux que sans `-watch` |
+| `cmd/audioprofile/panel_test.go` | `-serve` de bout en bout (adresse affichée, `PUT` à mi-flux, serveur arrêté à la fin) et erreurs d'options |
+| `panel/*_test.go` | routes, types de contenu, champs inconnus, corps trop gros, refus de l'hôte avec une erreur renvoyée telle quelle, origine étrangère, rebond DNS (`Host`), arrêt du serveur ; aller-retour d'un profil par le format de la page **sans changer le son**, JSON sans perte (étage absent = `null`) ; bornes saines des curseurs à 3 fréquences d'échantillonnage |
 | `cmd/audioprofile/fx_test.go` | `-fx lofi` (modifié, reproductible, tout à 0 identique, quantification seule, bornes, longueur conservée avec `-ab`), `-fx chorus` et `-fx flanger` (modifié, mix 0 identique, bornes, depth <= delay), `-fx delay` (écho à l'instant demandé, mix 0 identique, pingpong 0 ou 1 seulement, bornes), `-fx crossfeed` (centre identique, fuite à droite, mono, bornes), `-fx notch` (50 Hz supprimé, 1 kHz intact, deux notch de suite, bornes), `-fx gate` (fort intact, faible réduit, ratio 1 identique, bornes), `-fx parcomp` (mix 0 identique, flux modifié, toutes les bornes), `-fx deess` et `-fx exciter` (réduction mesurée, sous le seuil, identité à ratio 1 / amount 0, toutes les bornes, chaîne complète avec un profil), `-fx reverb` (queue après le son, mix 0 identique, défaut, bornes, effets chaînés et nom en `-ab`), `-fx transient` (identité sans réglage, attaque mesurée, bornes), `-list-fx`, `-fx` seul (sans profil) et combiné à un profil, filtres passe-haut / passe-bas / passe-bande mesurés, casse et espaces, mono, ordre des effets, toutes les erreurs d'analyse (effet ou paramètre inconnu, doublon, NaN, hors bornes, Nyquist), noms en `-ab`, avec `-loudness` et `-target-lufs` |
 | `cmd/audioprofile/main_test.go` | liste des profils (dont `radio-*`) et des amplis, traitement, `-ab` (profil sans effet bit à bit, alternance et convention annoncée, annonce de la source en cours à l'instant et juste avant son segment, annonces retardées dans l'ordre, pas de couleur hors terminal, erreurs d'options, ampli et mono), `-loudness` (sortie inchangée, tableau, mesure impossible sans `NaN`, avec `-ab`), sortie vers `/dev/null`, `-target-lufs` (−14 / −23 / −30 mesurés sur la sortie, après un profil, avec `-loudness`, cible inatteignable, silence, toutes les erreurs d'options), profil radio (longueur, plafond à −1 dBFS à l'intensité 3, intensité 0), identité de `flat`, `-amp` (trois préréglages, casse, intensité 0 et 2, `-cabinet`), mono et fréquence, erreurs (ampli inconnu, `-profile` + `-amp`, `-cabinet` seul…), entrée vide |
 

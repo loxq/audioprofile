@@ -1,4 +1,10 @@
-package main
+// Package config lit et écrit le fichier de réglages YAML : réglages des profils, des préréglages d'ampli et
+// valeurs par défaut des effets. Tout ce que le fichier ne précise pas garde sa valeur codée en dur dans la
+// bibliothèque, donc un fichier absent ou vide ne change rien. Voir audioprofile.example.yaml pour le format.
+//
+// Un *Config est en lecture seule une fois construit. nil est la configuration vide : toutes les méthodes y
+// répondent avec les valeurs par défaut.
+package config
 
 import (
 	"bytes"
@@ -13,11 +19,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/loxq/audioprofile"
+	"github.com/loxq/audioprofile/fx"
 )
-
-// Le fichier de configuration (-config) : réglages des profils, des préréglages d'ampli et valeurs par
-// défaut des effets. Tout ce qui n'y est pas écrit garde sa valeur codée en dur dans le paquet, donc
-// un fichier absent ou vide ne change rien. Voir audioprofile.example.yaml pour le format.
 
 // ---------------------------------------------------------------- schéma YAML
 
@@ -102,38 +105,48 @@ func bandTypeList() string {
 
 // ---------------------------------------------------------------- configuration résolue
 
-// config est la configuration résolue : chaque profil et chaque ampli du fichier est complet (fusionné avec
+// Config est la configuration résolue : chaque profil et chaque ampli du fichier est complet (fusionné avec
 // sa base prédéfinie). Le zéro (ou nil) est la configuration vide : tout reste aux valeurs par défaut.
-type config struct {
+type Config struct {
 	profiles   map[string]audioprofile.ProfileSettings
 	amps       map[string]audioprofile.TubeAmpSettings
 	fxDefaults map[string]map[string]float64
 }
 
-// loadConfig lit le fichier YAML (path vide : configuration vide).
-func loadConfig(path string) (*config, error) {
+// FXDefaults renvoie les valeurs par défaut des effets du fichier, par nom d'effet puis de paramètre (nil si le
+// fichier n'en précise aucune). C'est ce qu'attendent fx.Parse et fx.New. La table est partagée : ne la modifiez pas.
+func (c *Config) FXDefaults() map[string]map[string]float64 {
+	if c == nil {
+		return nil
+	}
+	return c.fxDefaults
+}
+
+// Load lit le fichier YAML (path vide : configuration vide).
+func Load(path string) (*Config, error) {
 	if path == "" {
-		return &config{}, nil
+		return &Config{}, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("-config : %w", err)
+		return nil, fmt.Errorf("config : %w", err)
 	}
-	c, err := parseConfig(bytes.NewReader(data))
+	c, err := Parse(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("-config %s : %w", path, err)
+		return nil, fmt.Errorf("config %s : %w", path, err)
 	}
 	return c, nil
 }
 
-func parseConfig(r io.Reader) (*config, error) {
+// Parse lit une configuration YAML. Les clés inconnues sont refusées.
+func Parse(r io.Reader) (*Config, error) {
 	var f configFile
 	dec := yaml.NewDecoder(r)
 	dec.KnownFields(true)
 	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) { // io.EOF : fichier vide
 		return nil, err
 	}
-	c := &config{}
+	c := &Config{}
 	for _, name := range sortedKeys(f.Profiles) {
 		pc := f.Profiles[name]
 		if pc == nil {
@@ -184,8 +197,8 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// profile renvoie les réglages du profil : ceux du fichier s'il y est, sinon le profil prédéfini.
-func (c *config) profile(name string) (audioprofile.ProfileSettings, bool) {
+// Profile renvoie les réglages du profil : ceux du fichier s'il y est, sinon le profil prédéfini.
+func (c *Config) Profile(name string) (audioprofile.ProfileSettings, bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if c != nil {
 		if s, ok := c.profiles[name]; ok {
@@ -198,8 +211,8 @@ func (c *config) profile(name string) (audioprofile.ProfileSettings, bool) {
 	return audioprofile.ProfileSettings{}, false
 }
 
-// amp renvoie les réglages du préréglage d'ampli (à intensité 1, baffle compris).
-func (c *config) amp(name string) (audioprofile.TubeAmpSettings, bool) {
+// Amp renvoie les réglages du préréglage d'ampli (à intensité 1, baffle compris).
+func (c *Config) Amp(name string) (audioprofile.TubeAmpSettings, bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if c != nil {
 		if s, ok := c.amps[name]; ok {
@@ -212,8 +225,8 @@ func (c *config) amp(name string) (audioprofile.TubeAmpSettings, bool) {
 	return audioprofile.TubeAmpSettings{}, false
 }
 
-// profileNames liste les profils prédéfinis, puis ceux que seul le fichier définit.
-func (c *config) profileNames() []string {
+// ProfileNames liste les profils prédéfinis, puis ceux que seul le fichier définit.
+func (c *Config) ProfileNames() []string {
 	var names []string
 	for _, p := range audioprofile.Profiles() {
 		names = append(names, p.String())
@@ -228,8 +241,8 @@ func (c *config) profileNames() []string {
 	return names
 }
 
-// ampNames liste les préréglages d'ampli prédéfinis, puis ceux que seul le fichier définit.
-func (c *config) ampNames() []string {
+// AmpNames liste les préréglages d'ampli prédéfinis, puis ceux que seul le fichier définit.
+func (c *Config) AmpNames() []string {
 	var names []string
 	for _, p := range audioprofile.TubeAmpPresets() {
 		names = append(names, p.String())
@@ -244,19 +257,19 @@ func (c *config) ampNames() []string {
 	return names
 }
 
-// validate vérifie les profils du fichier pour une fréquence d'échantillonnage donnée.
-func (c *config) validate(rate int) error {
+// Validate vérifie les profils et amplis du fichier pour une fréquence d'échantillonnage donnée.
+func (c *Config) Validate(rate int) error {
 	if c == nil {
 		return nil
 	}
 	for _, n := range sortedKeys(c.profiles) {
-		if err := validateProfile(c.profiles[n], rate); err != nil {
-			return fmt.Errorf("-config : profil %q : %w", n, err)
+		if err := ValidateProfile(c.profiles[n], rate); err != nil {
+			return fmt.Errorf("config : profil %q : %w", n, err)
 		}
 	}
 	for _, n := range sortedKeys(c.amps) {
-		if err := validateAmp(c.amps[n]); err != nil {
-			return fmt.Errorf("-config : ampli %q : %w", n, err)
+		if err := ValidateAmp(c.amps[n]); err != nil {
+			return fmt.Errorf("config : ampli %q : %w", n, err)
 		}
 	}
 	return nil
@@ -273,7 +286,7 @@ func (pc *profileConfig) resolve(name string) (audioprofile.ProfileSettings, err
 	if p, ok := audioprofile.ParseProfile(base); ok {
 		s = p.Settings()
 	} else if pc.Base != "" {
-		return s, fmt.Errorf("base %q inconnue (profils prédéfinis : %s)", pc.Base, strings.Join((*config)(nil).profileNames(), ", "))
+		return s, fmt.Errorf("base %q inconnue (profils prédéfinis : %s)", pc.Base, strings.Join((*Config)(nil).ProfileNames(), ", "))
 	} // sinon : un profil nouveau part de rien
 	if pc.Bands != nil {
 		s.Bands = nil
@@ -309,7 +322,7 @@ func (pc *profileConfig) resolve(name string) (audioprofile.ProfileSettings, err
 		if lc.Enabled != nil && !*lc.Enabled {
 			s.Limiter = nil
 		} else {
-			l := audioprofile.LimiterSettings{CeilingDB: -1, LookaheadMs: 5, ReleaseMs: 100}
+			l := limiterStart
 			if s.Limiter != nil {
 				l = *s.Limiter
 			}
@@ -324,6 +337,15 @@ func (pc *profileConfig) resolve(name string) (audioprofile.ProfileSettings, err
 
 // compressorStart est le point de départ d'un compresseur que le profil de base n'a pas.
 var compressorStart = audioprofile.CompressorSettings{ThresholdDB: -20, Ratio: 2, AttackMs: 10, ReleaseMs: 100, KneeDB: 6}
+
+// StartCompressor renvoie les valeurs d'un compresseur que le fichier active pour un profil qui n'en a pas.
+func StartCompressor() audioprofile.CompressorSettings { return compressorStart }
+
+// limiterStart est le point de départ d'un limiteur que le profil de base n'a pas.
+var limiterStart = audioprofile.LimiterSettings{CeilingDB: -1, LookaheadMs: 5, ReleaseMs: 100}
+
+// StartLimiter renvoie les valeurs d'un limiteur que le fichier active pour un profil qui n'en a pas.
+func StartLimiter() audioprofile.LimiterSettings { return limiterStart }
 
 func (cc compressorConfig) merge(c audioprofile.CompressorSettings) audioprofile.CompressorSettings {
 	set(&c.ThresholdDB, cc.Threshold)
@@ -388,7 +410,7 @@ func (ac *ampConfig) resolve(name string) (audioprofile.TubeAmpSettings, error) 
 	if p, ok := audioprofile.ParseTubeAmpPreset(base); ok {
 		s = p.Settings()
 	} else if ac.Base != "" {
-		return s, fmt.Errorf("base %q inconnue (préréglages prédéfinis : %s)", ac.Base, strings.Join((*config)(nil).ampNames(), ", "))
+		return s, fmt.Errorf("base %q inconnue (préréglages prédéfinis : %s)", ac.Base, strings.Join((*Config)(nil).AmpNames(), ", "))
 	}
 	set(&s.DriveDB, ac.Drive)
 	if ac.Stages != nil {
@@ -414,20 +436,15 @@ func set(dst *float64, v *float64) {
 // fxDefaultsFor vérifie les valeurs par défaut d'un effet : l'effet et chaque clé doivent exister,
 // une valeur est un nombre ou un booléen (true = 1, false = 0).
 func fxDefaultsFor(name string, raw map[string]any) (map[string]float64, error) {
-	var def *fxDef
-	for i := range fxDefs {
-		if fxDefs[i].name == name {
-			def = &fxDefs[i]
-		}
-	}
+	def := fx.Lookup(name)
 	if def == nil {
-		return nil, fmt.Errorf("effet inconnu (effets : %s)", fxNames())
+		return nil, fmt.Errorf("effet inconnu (effets : %s)", strings.Join(fx.Names(), ", "))
 	}
 	known := map[string]bool{}
 	var keys []string
-	for _, p := range def.params {
-		known[p.key] = true
-		keys = append(keys, p.key)
+	for _, p := range def.Params {
+		known[p.Key] = true
+		keys = append(keys, p.Key)
 	}
 	out := map[string]float64{}
 	for _, k := range sortedKeys(raw) {
@@ -479,7 +496,9 @@ func checkCompressor(c audioprofile.CompressorSettings) error {
 	return nil
 }
 
-func validateProfile(s audioprofile.ProfileSettings, rate int) error {
+// ValidateProfile vérifie des réglages de profil pour une fréquence d'échantillonnage : valeurs finies et
+// dans leurs bornes, fréquences sous Nyquist, multibande cohérente.
+func ValidateProfile(s audioprofile.ProfileSettings, rate int) error {
 	nyq := float64(rate) / 2
 	for i, b := range s.Bands {
 		if !finite(b.FreqHz, b.GainDB, b.Q) {
@@ -540,7 +559,8 @@ func validateProfile(s audioprofile.ProfileSettings, rate int) error {
 	return nil
 }
 
-func validateAmp(s audioprofile.TubeAmpSettings) error {
+// ValidateAmp vérifie des réglages d'ampli.
+func ValidateAmp(s audioprofile.TubeAmpSettings) error {
 	if !finite(s.DriveDB, s.Bias, s.BassDB, s.MidDB, s.TrebleDB, s.OutputDB) {
 		return errors.New("valeur non finie")
 	}
@@ -555,7 +575,7 @@ func validateAmp(s audioprofile.TubeAmpSettings) error {
 	return nil
 }
 
-// ---------------------------------------------------------------- export (-dump-config)
+// ---------------------------------------------------------------- export
 
 func ptr[T any](v T) *T { return &v }
 
@@ -618,29 +638,29 @@ func ampToConfig(s audioprofile.TubeAmpSettings) *ampConfig {
 		Treble: ptr(s.TrebleDB), Cabinet: ptr(s.Cabinet), Output: ptr(s.OutputDB)}
 }
 
-// dumpConfig écrit, en YAML, les réglages effectifs (valeurs du fichier comprises) de tous les profils
+// Dump écrit, en YAML, les réglages effectifs (valeurs du fichier comprises) de tous les profils
 // et préréglages d'ampli, et les valeurs par défaut des effets : un point de départ complet à éditer.
-func (c *config) dumpConfig(w io.Writer) error {
+func (c *Config) Dump(w io.Writer) error {
 	f := configFile{Profiles: map[string]*profileConfig{}, Amps: map[string]*ampConfig{}, FX: map[string]map[string]any{}}
-	for _, n := range c.profileNames() {
-		s, _ := c.profile(n)
+	for _, n := range c.ProfileNames() {
+		s, _ := c.Profile(n)
 		f.Profiles[n] = profileToConfig(n, s)
 	}
-	for _, n := range c.ampNames() {
-		s, _ := c.amp(n)
+	for _, n := range c.AmpNames() {
+		s, _ := c.Amp(n)
 		f.Amps[n] = ampToConfig(s)
 	}
-	for _, d := range fxDefs {
+	for _, d := range fx.Defs() {
 		m := map[string]any{}
-		for _, p := range d.params {
-			if v, ok := c.fxDefaults[d.name][p.key]; ok {
-				m[p.key] = v
-			} else if !p.required {
-				m[p.key] = p.def
+		for _, p := range d.Params {
+			if v, ok := c.FXDefaults()[d.Name][p.Key]; ok {
+				m[p.Key] = v
+			} else if !p.Required {
+				m[p.Key] = p.Default
 			}
 		}
 		if len(m) > 0 {
-			f.FX[d.name] = m
+			f.FX[d.Name] = m
 		}
 	}
 	enc := yaml.NewEncoder(w)
@@ -649,4 +669,29 @@ func (c *config) dumpConfig(w io.Writer) error {
 		return err
 	}
 	return enc.Close()
+}
+
+// MarshalProfile écrit un profil au format du fichier de réglages (sous la clé profiles), pour le coller dans le
+// fichier. Un profil prédéfini est écrit en entier, étages supprimés compris (« enabled: false »).
+func MarshalProfile(name string, s audioprofile.ProfileSettings) ([]byte, error) {
+	name = strings.ToLower(name)
+	return marshal(configFile{Profiles: map[string]*profileConfig{name: profileToConfig(name, s)}})
+}
+
+// MarshalAmp écrit un préréglage d'ampli au format du fichier de réglages (sous la clé amps).
+func MarshalAmp(name string, s audioprofile.TubeAmpSettings) ([]byte, error) {
+	return marshal(configFile{Amps: map[string]*ampConfig{strings.ToLower(name): ampToConfig(s)}})
+}
+
+func marshal(f configFile) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(f); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

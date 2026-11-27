@@ -20,7 +20,10 @@ import (
 	"time"
 
 	"github.com/loxq/audioprofile"
-	"github.com/loxq/audioprofile/internal/panel"
+	"github.com/loxq/audioprofile/config"
+	"github.com/loxq/audioprofile/fx"
+	"github.com/loxq/audioprofile/live"
+	"github.com/loxq/audioprofile/panel"
 )
 
 func main() {
@@ -100,37 +103,37 @@ Options :
 		return fmt.Errorf("argument inattendu %q (les données passent par l'entrée standard)", fs.Arg(0))
 	}
 
-	cfg, err := loadConfig(*configPath)
+	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err
 	}
 
 	if *dumpConfig {
-		return cfg.dumpConfig(stdout)
+		return cfg.Dump(stdout)
 	}
 
 	if *list {
-		for _, n := range cfg.profileNames() {
+		for _, n := range cfg.ProfileNames() {
 			fmt.Fprintln(stdout, n)
 		}
 		return nil
 	}
 
 	if *listFX {
-		fmt.Fprint(stdout, fxListing())
+		fmt.Fprint(stdout, fx.Listing())
 		return nil
 	}
 
 	if *listAmps {
-		for _, n := range cfg.ampNames() {
+		for _, n := range cfg.AmpNames() {
 			fmt.Fprintln(stdout, n)
 		}
 		return nil
 	}
 
-	var effects []fxEffect
+	var effects []fx.Effect
 	for _, spec := range fxs {
-		e, err := parseFX(spec, cfg.fxDefaults)
+		e, err := fx.Parse(spec, cfg.FXDefaults())
 		if err != nil {
 			return err
 		}
@@ -138,7 +141,7 @@ Options :
 	}
 	if *profile == "" && *amp == "" && len(effects) == 0 && *serve == "" {
 		fs.Usage()
-		return errors.New("-profile ou -amp est obligatoire, sauf si au moins un -fx est donné (profils : " + strings.Join(cfg.profileNames(), ", ") + " ; amplis : " + strings.Join(cfg.ampNames(), ", ") + " ; effets : " + fxNames() + ")")
+		return errors.New("-profile ou -amp est obligatoire, sauf si au moins un -fx est donné (profils : " + strings.Join(cfg.ProfileNames(), ", ") + " ; amplis : " + strings.Join(cfg.AmpNames(), ", ") + " ; effets : " + strings.Join(fx.Names(), ", ") + ")")
 	}
 	if *profile != "" && *amp != "" {
 		return errors.New("-profile et -amp sont exclusifs : choisissez l'un ou l'autre")
@@ -203,8 +206,8 @@ Options :
 	if *intensity < 0 || *intensity > audioprofile.MaxIntensity {
 		return fmt.Errorf("-intensity doit être dans [0, %g] (reçu %g)", audioprofile.MaxIntensity, *intensity)
 	}
-	pl := pipeline{profile: *profile, amp: *amp, cabinet: *cabinet, intensity: *intensity, rate: *rate, channels: *channels, fxSpecs: fxs}
-	process, err := pl.build(cfg)
+	pl := live.Pipeline{Profile: *profile, Amp: *amp, Cabinet: *cabinet, Intensity: *intensity, Rate: *rate, Channels: *channels, FX: fxs}
+	process, err := pl.Build(cfg)
 	if err != nil {
 		return err
 	}
@@ -229,7 +232,7 @@ Options :
 			parts = append(parts, *profile)
 		}
 		for _, e := range effects {
-			parts = append(parts, e.spec)
+			parts = append(parts, e.Spec)
 		}
 		label := strings.Join(parts, " + ")
 		if err := runAB(out, stderr, stdin, process, *rate, *channels, *abSeconds, *abDelay, label, *loudness); err != nil {
@@ -257,11 +260,12 @@ Options :
 	if *watch || *serve != "" {
 		sw := audioprofile.NewSwitcher(src, *rate, *channels, process)
 		if *watch {
-			if stopWatch, err = startWatch(*configPath, sw, pl, stderr); err != nil {
+			logf := func(format string, args ...any) { fmt.Fprintf(stderr, format+"\n", args...) }
+			if stopWatch, err = live.Watch(*configPath, sw, pl, live.WatchOptions{Interval: watchInterval, Logf: logf}); err != nil {
 				return err
 			}
 		} else {
-			pn, err := newPanelBackend(cfg, pl, sw)
+			pn, err := live.NewTuner(cfg, pl, sw)
 			if err != nil {
 				return err
 			}
