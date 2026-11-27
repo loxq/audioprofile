@@ -24,6 +24,7 @@ Ce que le paquet `audioprofile` propose :
 - `BassBoost`, `MidBoost`, `TrebleBoost` : **préréglages à une bande** (basses, médiums, aigus) réglés par une simple intensité ;
 - `MeasureLoudness`, `LoudnessMeter` : **mesure de sonie** EBU R128 (intégrée en LUFS, plage en LU, crête), au fil de l'eau ;
 - `NormalizeLoudness` : **normalisation de sonie** (amène un morceau à −14 LUFS, par exemple, avec un limiteur sur les crêtes) ;
+- `Switcher` : **changement de chaîne à chaud** sans clic (mise en régime sur l'historique, fondu enchaîné), pour régler à l'oreille ;
 - `MatchGains`, `ApplyGain`, `Alternate`, `SegmentFrames` : **comparaison A/B à sonie égale** (alterne l'original et le traité) ;
 - `audioprofile` (commande) : applique un profil ou un préréglage d'ampli sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`, , compare à l'oreille avec `-ab` , mesure la sonie avec `-loudness` et la règle avec `-target-lufs`.
 
@@ -848,7 +849,24 @@ fx:
 - **Amplis** : `-cabinet` active le baffle même si le fichier le désactive ; sans `-cabinet`, c'est le fichier qui décide.
 - `-list` et `-list-amps` montrent aussi les noms définis par le fichier. L'exemple complet et commenté est [audioprofile.example.yaml](audioprofile.example.yaml).
 
-Côté bibliothèque, `Profile.Settings()` renvoie les réglages complets d'un profil (une copie à modifier librement) et `ApplyProfileSettings` les applique : `ApplyProfile(src, …, p, i)` équivaut à `ApplyProfileSettings(src, …, p.Settings(), i)`.
+#### Rechargement à chaud (`-watch`)
+
+Avec `-watch`, le fichier est surveillé : quand on l'enregistre, les nouveaux réglages s'appliquent **en cours de lecture**, sans relancer ni clic. On règle ainsi à l'oreille : éditer, enregistrer, écouter.
+
+```sh
+ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -config reglages.yaml -watch -profile rock \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+# autre terminal : éditer reglages.yaml, enregistrer → « -config reglages.yaml : rechargé » sur la sortie d'erreur
+```
+
+- **Sans clic** : la nouvelle chaîne est d'abord mise en régime sur les 2 dernières secondes déjà traitées (filtres, enveloppes des compresseurs, AGC, lignes à retard), puis un fondu de 30 ms fait passer de l'ancienne à la nouvelle sortie, sur le même instant du signal. Le flux garde la longueur de la source et aucune latence n'est ajoutée. Chaque changement coûte, une fois, de 25 à 55 ms de calcul (profil `rock` et `radio-hits`, mesuré).
+- **Ce qui est rechargé** : les profils, amplis et valeurs par défaut de `-fx` du fichier. Le profil ou l'ampli choisi, `-intensity` et la liste des `-fx` restent ceux de la ligne de commande.
+- **Fichier invalide** (YAML cassé, valeur hors bornes, profil disparu) : l'erreur est signalée sur la sortie d'erreur et **les réglages précédents restent**. Corriger le fichier suffit. L'enregistrement en deux temps de certains éditeurs (fichier vidé puis rempli) est toléré : on attend que le fichier soit stable pendant 250 ms.
+- **Délai d'écoute** : la sortie est écrite par paquets de 8 Ko (46 ms), mais ffplay lit environ 1 s d'avance et le tube en garde un peu : le réglage s'entend avec ce retard (voir `-ab-delay` pour le même sujet).
+- **Limites** : une queue de plus de 2 s (réverb très longue, écho à forte rétroaction) repart de ce que l'historique permet de reconstruire. `-watch` est incompatible avec `-ab` et `-target-lufs`, qui lisent tout le flux avant de sortir.
+
+Côté bibliothèque, `Profile.Settings()` renvoie les réglages complets d'un profil (une copie à modifier librement) et `ApplyProfileSettings` les applique : `ApplyProfile(src, …, p, i)` équivaut à `ApplyProfileSettings(src, …, p.Settings(), i)`. `NewSwitcher(src, rate, channels, build)` renvoie un flux dont la chaîne se remplace à chaud avec `Swap(build)` (sûr depuis un autre goroutine) : c'est ce que fait `-watch`, et ce que brancherait un panneau de réglage.
 
 ### Ajouter des effets (`-fx`)
 

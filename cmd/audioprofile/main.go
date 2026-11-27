@@ -51,6 +51,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		list       = fs.Bool("list", false, "affiche les profils disponibles et quitte")
 		listAmps   = fs.Bool("list-amps", false, "affiche les préréglages d'ampli disponibles et quitte")
 		configPath = fs.String("config", "", "fichier YAML de réglages : profils, préréglages d'ampli et valeurs par défaut des effets (ce qu'il ne précise pas garde sa valeur par défaut ; voir -dump-config)")
+		watch      = fs.Bool("watch", false, "avec -config : recharge le fichier quand il change et change les réglages en cours de lecture, sans clic (la mise en régime rejoue 2 s de signal)")
 		dumpConfig = fs.Bool("dump-config", false, "écrit en YAML les réglages effectifs de tous les profils, amplis et effets (avec -config : fichier compris) et quitte : un point de départ à éditer")
 		listFX     = fs.Bool("list-fx", false, "affiche les effets de -fx et leurs paramètres, et quitte")
 	)
@@ -155,6 +156,16 @@ Options :
 	if *abDelay < 0 || math.IsNaN(*abDelay) || math.IsInf(*abDelay, 0) {
 		return fmt.Errorf("-ab-delay doit être >= 0 (reçu %g)", *abDelay)
 	}
+	if *watch {
+		switch {
+		case *configPath == "":
+			return errors.New("-watch ne s'utilise qu'avec -config")
+		case *ab:
+			return errors.New("-watch et -ab sont exclusifs : -ab lit tout le flux avant de jouer")
+		case set["target-lufs"]:
+			return errors.New("-watch et -target-lufs sont exclusifs : -target-lufs lit tout le flux avant d'écrire")
+		}
+	}
 	if set["ceiling"] && !set["target-lufs"] {
 		return errors.New("-ceiling ne s'utilise qu'avec -target-lufs")
 	}
@@ -169,20 +180,6 @@ Options :
 			return fmt.Errorf("-ceiling doit être dans [-40, 0] (reçu %g)", *ceiling)
 		}
 	}
-	var (
-		profileSettings audioprofile.ProfileSettings
-		ampSettings     audioprofile.TubeAmpSettings
-		ok              bool
-	)
-	if *amp != "" {
-		if ampSettings, ok = cfg.amp(*amp); !ok {
-			return fmt.Errorf("ampli inconnu %q (amplis : %s)", *amp, strings.Join(cfg.ampNames(), ", "))
-		}
-	} else if *profile != "" {
-		if profileSettings, ok = cfg.profile(*profile); !ok {
-			return fmt.Errorf("profil inconnu %q (profils : %s)", *profile, strings.Join(cfg.profileNames(), ", "))
-		}
-	}
 	if *rate <= 0 {
 		return fmt.Errorf("-rate doit être > 0 (reçu %d)", *rate)
 	}
@@ -192,13 +189,10 @@ Options :
 	if *intensity < 0 || *intensity > audioprofile.MaxIntensity {
 		return fmt.Errorf("-intensity doit être dans [0, %g] (reçu %g)", audioprofile.MaxIntensity, *intensity)
 	}
-	if err := cfg.validate(*rate); err != nil {
+	pl := pipeline{profile: *profile, amp: *amp, cabinet: *cabinet, intensity: *intensity, rate: *rate, channels: *channels, fxSpecs: fxs}
+	process, err := pl.build(cfg)
+	if err != nil {
 		return err
-	}
-	for _, e := range effects {
-		if err := e.validate(*rate, *channels); err != nil {
-			return err
-		}
 	}
 	if isTerminal(stdin) {
 		return errors.New("aucune donnée sur l'entrée standard : utilisez un pipe (ffmpeg ... - | audioprofile ...) ou une redirection (< fichier.raw)")
@@ -207,24 +201,11 @@ Options :
 		return errors.New("refus d'écrire du PCM brut sur un terminal : redirigez la sortie (> fichier.raw) ou utilisez un pipe (| ffplay ...)")
 	}
 
-	out := bufio.NewWriterSize(stdout, 64*1024)
-	process := func(src io.Reader) io.Reader {
-		r := src
-		switch {
-		case *amp != "":
-			s := ampSettings.Scaled(*intensity)
-			if *cabinet { // sans -cabinet, le fichier de configuration décide
-				s.Cabinet = true
-			}
-			r = audioprofile.TubeAmp(r, *rate, *channels, s)
-		case *profile != "":
-			r = audioprofile.ApplyProfileSettings(r, *rate, *channels, profileSettings, *intensity)
-		}
-		for _, e := range effects {
-			r = e.apply(r, *rate, *channels)
-		}
-		return r
+	outSize := 64 * 1024
+	if *watch { // petits paquets : un réglage doit s'entendre vite, pas après 370 ms de tampon
+		outSize = 8 * 1024
 	}
+	out := bufio.NewWriterSize(stdout, outSize)
 	if *ab {
 		var parts []string
 		switch {
@@ -257,7 +238,21 @@ Options :
 		src = io.TeeReader(stdin, inMeter)
 		dst = io.MultiWriter(out, outMeter)
 	}
-	if _, err := io.Copy(dst, process(src)); err != nil {
+	var proc io.Reader
+	stopWatch := func() {}
+	if *watch {
+		sw := audioprofile.NewSwitcher(src, *rate, *channels, process)
+		if stopWatch, err = startWatch(*configPath, sw, pl, stderr); err != nil {
+			return err
+		}
+		defer stopWatch()
+		proc = sw
+	} else {
+		proc = process(src)
+	}
+	_, err = io.Copy(dst, proc)
+	stopWatch() // avant d'écrire sur stderr : le goroutine de surveillance y écrit aussi
+	if err != nil {
 		return fmt.Errorf("traitement : %w", err)
 	}
 	if err := out.Flush(); err != nil {
