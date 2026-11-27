@@ -53,6 +53,14 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
   | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
 ```
 
+Pour **régler en direct** avec le panneau (curseurs, vumètres, sonie, spectre), boucler le morceau et ajouter `-serve` ; l'adresse du panneau s'affiche sur la sortie d'erreur :
+
+```sh
+ffmpeg -loglevel error -stream_loop -1 -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -serve 127.0.0.1:8080 -profile rock \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+```
+
 `./audioprofile -list` donne les profils, `-list-amps` les amplis, `-list-fx` les effets. Voir [la commande](docs/cli.md).
 
 ## Format d'entrée / sortie

@@ -58,6 +58,18 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 | `-list`       | —       | Affiche les profils disponibles et quitte                         |
 | `-list-amps`  | —       | Affiche les préréglages d'ampli disponibles et quitte             |
 
+## Régler avec le panneau (`-serve`)
+
+`-serve` ouvre un panneau de réglage dans le navigateur : des curseurs sur le profil, l'ampli et les effets, appliqués au flux en cours, avec les vumètres, la sonie et le spectre avant / après. Boucler le morceau (`-stream_loop -1`) permet de régler sans s'arrêter ; l'adresse du panneau s'affiche sur la sortie d'erreur.
+
+```sh
+ffmpeg -loglevel error -stream_loop -1 -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -serve 127.0.0.1:8080 -profile rock \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+```
+
+Sans `-profile` ni `-amp`, on part sans traitement et on choisit dans la page. `-serve` est incompatible avec `-watch`, `-ab` et `-target-lufs`. Le détail est dans [Régler en direct](reglage.md#panneau-de-réglage--serve).
+
 ## Ajouter des effets (`-fx`)
 
 ```sh
