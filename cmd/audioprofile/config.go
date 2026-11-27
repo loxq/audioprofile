@@ -508,8 +508,13 @@ func validateProfile(s audioprofile.ProfileSettings, rate int) error {
 	if !finite(sat.DriveDB, sat.Bias, sat.OutputDB) {
 		return errors.New("saturation : valeur non finie")
 	}
-	if sat.Bias < 0 || sat.Bias > 1 || sat.Stages < 0 || sat.Stages > 4 || sat.DriveDB < 0 {
-		return errors.New("saturation : drive doit être >= 0, bias dans [0, 1] et stages dans [0, 4]")
+	switch {
+	case sat.DriveDB < 0:
+		return fmt.Errorf("saturation : drive doit être >= 0 (reçu %g)", sat.DriveDB)
+	case sat.Bias < 0 || sat.Bias > 1:
+		return fmt.Errorf("saturation : bias doit être dans [0, 1] (reçu %g)", sat.Bias)
+	case sat.Stages < 0 || sat.Stages > 4:
+		return fmt.Errorf("saturation : stages doit être dans [0, 4] (reçu %d)", sat.Stages)
 	}
 	if m := s.Multiband; m != nil {
 		if len(m.Bands) != len(m.Crossovers)+1 {
@@ -543,8 +548,13 @@ func validateAmp(s audioprofile.TubeAmpSettings) error {
 	if !finite(s.DriveDB, s.Bias, s.BassDB, s.MidDB, s.TrebleDB, s.OutputDB) {
 		return errors.New("valeur non finie")
 	}
-	if s.DriveDB < 0 || s.Bias < 0 || s.Bias > 1 || s.Stages < 0 || s.Stages > 4 {
-		return errors.New("drive doit être >= 0, bias dans [0, 1] et stages dans [0, 4]")
+	switch {
+	case s.DriveDB < 0:
+		return fmt.Errorf("drive doit être >= 0 (reçu %g)", s.DriveDB)
+	case s.Bias < 0 || s.Bias > 1:
+		return fmt.Errorf("bias doit être dans [0, 1] (reçu %g)", s.Bias)
+	case s.Stages < 0 || s.Stages > 4:
+		return fmt.Errorf("stages doit être dans [0, 4] (reçu %d)", s.Stages)
 	}
 	return nil
 }

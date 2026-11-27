@@ -52,6 +52,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		listAmps   = fs.Bool("list-amps", false, "affiche les préréglages d'ampli disponibles et quitte")
 		configPath = fs.String("config", "", "fichier YAML de réglages : profils, préréglages d'ampli et valeurs par défaut des effets (ce qu'il ne précise pas garde sa valeur par défaut ; voir -dump-config)")
 		watch      = fs.Bool("watch", false, "avec -config : recharge le fichier quand il change et change les réglages en cours de lecture, sans clic (la mise en régime rejoue 2 s de signal)")
+		serve      = fs.String("serve", "", "ouvre un panneau de réglage dans le navigateur à cette adresse (ex. 127.0.0.1:8080, ou 127.0.0.1:0 pour un port libre) : curseurs sur le profil, l'ampli et les effets, appliqués en cours de lecture")
 		dumpConfig = fs.Bool("dump-config", false, "écrit en YAML les réglages effectifs de tous les profils, amplis et effets (avec -config : fichier compris) et quitte : un point de départ à éditer")
 		listFX     = fs.Bool("list-fx", false, "affiche les effets de -fx et leurs paramètres, et quitte")
 	)
@@ -67,6 +68,8 @@ et écrit le même format sur la sortie standard. Exemple :
     | audioprofile -profile rock \
     | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
 
+Panneau             : -serve 127.0.0.1:8080 ouvre un panneau de curseurs dans le navigateur (profil, ampli,
+                      effets), appliqués en cours de lecture ; boucler un morceau : ffmpeg -stream_loop -1 -i ...
 Réglages            : -config reglages.yaml change les réglages des profils, amplis et effets
                       (ce qu'il ne précise pas garde sa valeur par défaut) ; -dump-config
                       écrit tous les réglages actuels, un point de départ à éditer
@@ -132,7 +135,7 @@ Options :
 		}
 		effects = append(effects, e)
 	}
-	if *profile == "" && *amp == "" && len(effects) == 0 {
+	if *profile == "" && *amp == "" && len(effects) == 0 && *serve == "" {
 		fs.Usage()
 		return errors.New("-profile ou -amp est obligatoire, sauf si au moins un -fx est donné (profils : " + strings.Join(cfg.profileNames(), ", ") + " ; amplis : " + strings.Join(cfg.ampNames(), ", ") + " ; effets : " + fxNames() + ")")
 	}
@@ -155,6 +158,16 @@ Options :
 	}
 	if *abDelay < 0 || math.IsNaN(*abDelay) || math.IsInf(*abDelay, 0) {
 		return fmt.Errorf("-ab-delay doit être >= 0 (reçu %g)", *abDelay)
+	}
+	if *serve != "" {
+		switch {
+		case *watch:
+			return errors.New("-serve et -watch sont exclusifs : le panneau et le fichier se corrigeraient l'un l'autre")
+		case *ab:
+			return errors.New("-serve et -ab sont exclusifs : -ab lit tout le flux avant de jouer")
+		case set["target-lufs"]:
+			return errors.New("-serve et -target-lufs sont exclusifs : -target-lufs lit tout le flux avant d'écrire")
+		}
 	}
 	if *watch {
 		switch {
@@ -202,7 +215,7 @@ Options :
 	}
 
 	outSize := 64 * 1024
-	if *watch { // petits paquets : un réglage doit s'entendre vite, pas après 370 ms de tampon
+	if *watch || *serve != "" { // petits paquets : un réglage doit s'entendre vite, pas après 370 ms de tampon
 		outSize = 8 * 1024
 	}
 	out := bufio.NewWriterSize(stdout, outSize)
@@ -240,10 +253,23 @@ Options :
 	}
 	var proc io.Reader
 	stopWatch := func() {}
-	if *watch {
+	if *watch || *serve != "" {
 		sw := audioprofile.NewSwitcher(src, *rate, *channels, process)
-		if stopWatch, err = startWatch(*configPath, sw, pl, stderr); err != nil {
-			return err
+		if *watch {
+			if stopWatch, err = startWatch(*configPath, sw, pl, stderr); err != nil {
+				return err
+			}
+		} else {
+			pn, err := newPanel(cfg, pl, sw)
+			if err != nil {
+				return err
+			}
+			url, stopServe, err := servePanel(*serve, pn)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(stderr, "panneau de réglage : %s\n", url)
+			stopWatch = stopServe
 		}
 		defer stopWatch()
 		proc = sw
@@ -251,7 +277,7 @@ Options :
 		proc = process(src)
 	}
 	_, err = io.Copy(dst, proc)
-	stopWatch() // avant d'écrire sur stderr : le goroutine de surveillance y écrit aussi
+	stopWatch() // avant d'écrire sur stderr : le goroutine de surveillance (ou le serveur) y écrit aussi
 	if err != nil {
 		return fmt.Errorf("traitement : %w", err)
 	}

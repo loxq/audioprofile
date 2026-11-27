@@ -54,6 +54,12 @@ func (p pipeline) build(cfg *config) (func(io.Reader) io.Reader, error) {
 		}
 		effects = append(effects, e)
 	}
+	return p.assemble(ps, as, effects), nil
+}
+
+// assemble construit la fonction qui enveloppe un flux dans la chaîne : le profil ou l'ampli aux réglages donnés,
+// puis les effets, dans l'ordre. Les réglages doivent déjà être vérifiés.
+func (p pipeline) assemble(ps audioprofile.ProfileSettings, as audioprofile.TubeAmpSettings, effects []fxEffect) func(io.Reader) io.Reader {
 	return func(src io.Reader) io.Reader {
 		r := src
 		switch {
@@ -70,7 +76,7 @@ func (p pipeline) build(cfg *config) (func(io.Reader) io.Reader, error) {
 			r = e.apply(r, p.rate, p.channels)
 		}
 		return r
-	}, nil
+	}
 }
 
 // watchInterval est l'intervalle entre deux regards sur le fichier (une variable pour les tests).

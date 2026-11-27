@@ -24,7 +24,7 @@ Ce que le paquet `audioprofile` propose :
 - `BassBoost`, `MidBoost`, `TrebleBoost` : **préréglages à une bande** (basses, médiums, aigus) réglés par une simple intensité ;
 - `MeasureLoudness`, `LoudnessMeter` : **mesure de sonie** EBU R128 (intégrée en LUFS, plage en LU, crête), au fil de l'eau ;
 - `NormalizeLoudness` : **normalisation de sonie** (amène un morceau à −14 LUFS, par exemple, avec un limiteur sur les crêtes) ;
-- `Switcher` : **changement de chaîne à chaud** sans clic (mise en régime sur l'historique, fondu enchaîné), pour régler à l'oreille ;
+- `Switcher` : **changement de chaîne à chaud** sans clic (mise en régime sur l'historique, fondu enchaîné), pour régler à l'oreille ; la commande en fait un **panneau de réglage** web (`-serve`) ;
 - `MatchGains`, `ApplyGain`, `Alternate`, `SegmentFrames` : **comparaison A/B à sonie égale** (alterne l'original et le traité) ;
 - `audioprofile` (commande) : applique un profil ou un préréglage d'ampli sur un flux lu sur l'entrée standard, pour se brancher sur un pipe `ffmpeg`, , compare à l'oreille avec `-ab` , mesure la sonie avec `-loudness` et la règle avec `-target-lufs`.
 
@@ -867,6 +867,27 @@ ffmpeg -loglevel error -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
 - **Limites** : une queue de plus de 2 s (réverb très longue, écho à forte rétroaction) repart de ce que l'historique permet de reconstruire. `-watch` est incompatible avec `-ab` et `-target-lufs`, qui lisent tout le flux avant de sortir.
 
 Côté bibliothèque, `Profile.Settings()` renvoie les réglages complets d'un profil (une copie à modifier librement) et `ApplyProfileSettings` les applique : `ApplyProfile(src, …, p, i)` équivaut à `ApplyProfileSettings(src, …, p.Settings(), i)`. `NewSwitcher(src, rate, channels, build)` renvoie un flux dont la chaîne se remplace à chaud avec `Swap(build)` (sûr depuis un autre goroutine) : c'est ce que fait `-watch`, et ce que brancherait un panneau de réglage.
+
+### Panneau de réglage (`-serve`)
+
+`-serve 127.0.0.1:8080` ouvre un petit serveur local et une page de curseurs : on règle le profil, l'ampli et les effets **en écoutant**, sans éditer de fichier. Chaque changement s'applique en cours de lecture, sans clic (même mécanisme que `-watch`).
+
+```sh
+# boucler un morceau pour régler tranquillement
+ffmpeg -loglevel error -stream_loop -1 -i musique.mp3 -f s16le -ar 44100 -ac 2 - \
+  | ./audioprofile -serve 127.0.0.1:8080 -profile rock \
+  | ffplay -f s16le -ar 44100 -ac 2 -nodisp -
+# audioprofile écrit « panneau de réglage : http://127.0.0.1:8080/ » : ouvrir cette adresse
+```
+
+- **Ce qu'on règle** : le profil (bandes d'égalisation à ajouter, retirer ou changer de type, compresseur, limiteur, saturation, largeur stéréo, compression multibande) ou l'ampli (drive, étages, biais, timbre, baffle), l'intensité, et la chaîne d'effets (ajout, retrait, ordre, activation et paramètres de chacun). On peut changer de profil ou d'ampli dans la page ; un étage absent d'un profil s'active par sa case.
+- **Comparer** : la case « Original (A/B) » coupe tout le traitement sans toucher aux réglages, pour juger à niveau égal du résultat.
+- **Garder un réglage** : « Exporter » donne le YAML du profil ou de l'ampli (à coller dans le fichier de `-config`) et la ligne de commande équivalente, effets compris.
+- **Départ** : l'état de départ est celui de la ligne de commande, `-config` compris. Sans `-profile` ni `-amp`, on part sans traitement et on choisit dans la page.
+- **Réglages refusés** : une valeur hors bornes (ou deux paramètres incompatibles, comme `depth` plus grand que `delay` d'un chorus) s'affiche en rouge et ne change rien à ce qu'on entend.
+- **Curseurs** : fréquences et durées à échelle logarithmique. Une valeur tapée hors du curseur élargit le curseur ; seul le serveur juge. Les envois sont limités à un toutes les 140 ms environ, car chaque changement rejoue 2 s de signal (voir `-watch`).
+- **Sécurité** : le serveur n'a pas de mot de passe. Il est fait pour une adresse de bouclage (`127.0.0.1`) : il refuse alors les requêtes dont l'hôte n'est pas `localhost`, `127.0.0.1` ou `::1` (rebond DNS) ou dont l'origine est étrangère, et n'accepte les modifications qu'en JSON. Il ne peut que régler le son de ce processus, il n'écrit aucun fichier. Ne l'exposez pas sur un réseau.
+- `-serve` est incompatible avec `-watch` (le panneau et le fichier se corrigeraient mutuellement), `-ab` et `-target-lufs`. `-serve 127.0.0.1:0` choisit un port libre.
 
 ### Ajouter des effets (`-fx`)
 

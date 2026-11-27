@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>audioprofile — panneau de réglage</title>
+<style>
+:root {
+  --bg: #f6f6f4; --card: #ffffff; --ink: #1d1d1b; --muted: #6a6a66; --line: #dcdcd6;
+  --accent: #2d6a4f; --accent-ink: #ffffff; --warn: #b3261e; --ok: #2d6a4f; --track: #d6d6d0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --card: #20201e; --ink: #ececea; --muted: #9a9a94; --line: #34342f;
+    --accent: #6cc59a; --accent-ink: #0d1f16; --warn: #ff8a80; --ok: #6cc59a; --track: #3a3a35;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: var(--card); border-bottom: 1px solid var(--line);
+  padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+header h1 { font-size: 15px; margin: 0; font-weight: 650; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); align-items: start; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+section.wide { grid-column: 1 / -1; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px;
+  display: flex; align-items: center; gap: 8px; }
+h3 { font-size: 13px; margin: 10px 0 4px; display: flex; align-items: center; gap: 8px; }
+.row { display: grid; grid-template-columns: 96px 1fr 84px; gap: 8px; align-items: center; margin: 3px 0; }
+.row label { color: var(--muted); font-size: 13px; }
+.row .val { display: flex; align-items: center; gap: 4px; }
+.row .val input { width: 62px; }
+.row .val span { color: var(--muted); font-size: 12px; min-width: 22px; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+input[type=number], select { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 3px 5px; font: inherit; }
+button { background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.icon { padding: 1px 7px; }
+.item { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.item > .head { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+.item > .head .grow { flex: 1; font-weight: 600; }
+.muted { color: var(--muted); }
+.off { opacity: .5; }
+#status { font-size: 13px; padding: 2px 10px; border-radius: 99px; border: 1px solid var(--line); }
+#status.ok { color: var(--ok); } #status.err { color: var(--warn); border-color: var(--warn); }
+.spacer { flex: 1; }
+dialog { background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; max-width: 760px; width: calc(100% - 32px); }
+dialog pre { white-space: pre-wrap; background: var(--bg); padding: 10px; border-radius: 6px; max-height: 60vh; overflow: auto; }
+.err-text { color: var(--warn); }
+@media (max-width: 520px) { .row { grid-template-columns: 80px 1fr 78px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>audioprofile</h1>
+  <label>Traitement
+    <select id="kind"><option value="none">aucun</option><option value="profile">profil</option><option value="amp">ampli</option></select>
+    <select id="name"></select>
+  </label>
+  <label id="intensity-wrap">Intensité <input id="intensity" type="range"> <output id="intensity-out"></output></label>
+  <label><input id="bypass" type="checkbox"> Original (A/B)</label>
+  <span class="spacer"></span>
+  <span id="status" role="status" aria-live="polite">chargement…</span>
+  <button id="yaml">Exporter</button>
+</header>
+<main id="main"></main>
+<dialog id="dlg">
+  <h2>Réglages à garder</h2>
+  <p class="muted">Collez le YAML dans votre fichier de réglages (<code>-config</code>), sous les mêmes clés.</p>
+  <pre id="yaml-text"></pre>
+  <div style="display:flex; gap:8px; justify-content:flex-end">
+    <button id="copy" class="primary">Copier</button><button id="close">Fermer</button>
+  </div>
+</dialog>
+<script>
+"use strict";
+let schema, state;
+
+// ---------- petits outils
+const $ = (s, el = document) => el.querySelector(s);
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v === true) el.setAttribute(k, "");
+    else if (v !== false && v != null) el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null) el.append(kid.nodeType ? kid : document.createTextNode(kid));
+  return el;
+}
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const fmt = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : String(Math.round(v * 1000) / 1000));
+
+// ---------- envoi (limité : chaque changement coûte une mise en régime côté serveur)
+let timer = null, lastSend = 0, sending = false, dirty = false;
+function schedule() {
+  setStatus("…", "");
+  dirty = true;
+  clearTimeout(timer);
+  const wait = Math.max(0, 140 - (Date.now() - lastSend));
+  timer = setTimeout(send, wait);
+}
+async function send() {
+  if (sending) return; // la fin de l'envoi en cours relance
+  sending = true; dirty = false; lastSend = Date.now();
+  try {
+    const r = await fetch("/api/state", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state) });
+    const j = await r.json();
+    if (r.ok) setStatus("appliqué", "ok"); else setStatus("refusé : " + j.error, "err");
+  } catch (e) { setStatus("serveur injoignable", "err"); }
+  sending = false;
+  if (dirty) schedule();
+}
+function setStatus(text, cls) { const s = $("#status"); s.textContent = text; s.className = cls; }
+
+// ---------- curseur numérique
+// Échelle : position 0..1000 <-> valeur, linéaire ou logarithmique. Une valeur hors bornes (tapée, ou venue d'un
+// fichier) élargit le curseur plutôt que d'être refusée ici : le serveur juge.
+function toPos(f, lo, hi, v) {
+  v = Math.min(hi, Math.max(lo, v));
+  return f.log ? 1000 * Math.log(v / lo) / Math.log(hi / lo) : 1000 * (v - lo) / (hi - lo);
+}
+function fromPos(f, lo, hi, p) {
+  let v = f.log ? lo * Math.pow(hi / lo, p / 1000) : lo + (hi - lo) * p / 1000;
+  if (f.int) v = Math.round(v);
+  else if (f.step) v = Math.round(v / f.step) * f.step;
+  else v = Number(v.toPrecision(3));
+  return Math.min(hi, Math.max(lo, Number(v.toFixed(6))));
+}
+function numRow(f, obj, key, label) {
+  if (f.bool) {
+    return h("div", { class: "row" }, h("label", {}, label || f.label),
+      h("input", { type: "checkbox", checked: !!obj[key], onchange: (e) => { obj[key] = e.target.checked ? 1 : 0; schedule(); } }), h("span"));
+  }
+  let lo = f.min, hi = f.max;
+  const cur = obj[key];
+  if (typeof cur === "number") { lo = Math.min(lo, cur); hi = Math.max(hi, cur); }
+  if (f.log && lo <= 0) lo = f.min > 0 ? f.min : 1e-3;
+  const range = h("input", { type: "range", min: 0, max: 1000, step: 1, value: toPos(f, lo, hi, cur), "aria-label": label || f.label });
+  const box = h("input", { type: "number", step: f.int ? 1 : "any", value: fmt(cur), "aria-label": (label || f.label) + " (valeur)" });
+  range.addEventListener("input", () => { obj[key] = fromPos(f, lo, hi, +range.value); box.value = fmt(obj[key]); schedule(); });
+  box.addEventListener("change", () => {
+    const v = parseFloat(box.value);
+    if (!Number.isFinite(v)) { box.value = fmt(obj[key]); return; }
+    obj[key] = f.int ? Math.round(v) : v; range.value = toPos(f, lo, hi, obj[key]); schedule();
+  });
+  return h("div", { class: "row", title: f.doc || "" }, h("label", {}, label || f.label), range, h("div", { class: "val" }, box, h("span", {}, f.unit || "")));
+}
+function fieldsFor(specs, obj, skip) {
+  return specs.filter((f) => !(skip || []).includes(f.key)).map((f) => numRow(f, obj, f.key));
+}
+// étage optionnel : case à cocher dans le titre
+function optional(title, obj, key, make, body) {
+  const on = obj[key] != null;
+  const box = h("input", { type: "checkbox", checked: on, "aria-label": "activer " + title, onchange: (e) => {
+    obj[key] = e.target.checked ? clone(make()) : null; render(); schedule(); } });
+  return h("div", { class: on ? "" : "off" }, h("h3", {}, box, title), on ? body(obj[key]) : null);
+}
+
+// ---------- sections
+function bandRow(b, i, list) {
+  const type = h("select", { "aria-label": "type de la bande " + (i + 1), onchange: (e) => { b.type = e.target.value; render(); schedule(); } },
+    schema.bandTypes.map((t) => h("option", { value: t, selected: t === b.type }, t)));
+  const del = h("button", { class: "icon", title: "supprimer la bande", "aria-label": "supprimer la bande " + (i + 1), onclick: () => { list.splice(i, 1); render(); schedule(); } }, "×");
+  const show = { gain: ["gain"], lowshelf: ["freq", "gain", "q"], highshelf: ["freq", "gain", "q"], peaking: ["freq", "gain", "q"],
+    highpass: ["freq", "order"], lowpass: ["freq", "order"], notch: ["freq", "q"] }[b.type] || ["freq", "gain", "q"];
+  return h("div", { class: "item" }, h("div", { class: "head" }, h("span", { class: "muted" }, "#" + (i + 1)), type, h("span", { class: "grow" }), del),
+    schema.band.filter((f) => show.includes(f.key)).map((f) => numRow(f, b, f.key)));
+}
+function profileSections(p) {
+  const out = [];
+  const eq = h("section", { class: "wide" }, h("h2", {}, "Égaliseur",
+      h("button", { onclick: () => { p.bands.push({ type: "peaking", freq: 1000, gain: 0, q: 1, order: 2 }); render(); schedule(); } }, "+ bande")),
+    h("div", { style: "display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 12px" }, p.bands.map((b, i) => bandRow(b, i, p.bands))),
+    p.bands.length ? null : h("p", { class: "muted" }, "Aucune bande."));
+  out.push(eq);
+  out.push(h("section", {}, h("h2", {}, "Dynamique"),
+    optional("Compresseur", p, "compression", () => schema.defaults.compression, (c) => fieldsFor(schema.compressor, c)),
+    optional("Limiteur", p, "limiter", () => schema.defaults.limiter, (l) => fieldsFor(schema.limiter, l))));
+  out.push(h("section", {}, h("h2", {}, "Couleur et image"),
+    optional("Saturation", p, "saturation", () => schema.defaults.saturation, (s) => fieldsFor(schema.saturation, s)),
+    h("h3", {}, "Stéréo"), numRow(schema.width, p, "width", "Largeur")));
+  out.push(h("section", { class: "wide" }, h("h2", {}, "Multibande"),
+    optional("Compression par bandes", p, "multiband", () => schema.defaults.multiband, (m) => multibandBody(m))));
+  return out;
+}
+function multibandBody(m) {
+  const cut = { key: "x", label: "Séparation", unit: "Hz", min: 20, max: 20000, log: true, step: 0 };
+  return h("div", { style: "display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 12px" },
+    m.bands.map((c, i) => h("div", { class: "item" },
+      h("div", { class: "head" }, h("span", { class: "grow" }, "Bande " + (i + 1)),
+        h("span", { class: "muted" }, bandRange(m, i))),
+      i < m.crossovers.length ? numRow(cut, m.crossovers, i, "↑ coupure") : null,
+      fieldsFor(schema.compressor, c))));
+}
+function bandRange(m, i) {
+  const lo = i === 0 ? "0" : fmt(m.crossovers[i - 1]), hi = i < m.crossovers.length ? fmt(m.crossovers[i]) : "∞";
+  return lo + " – " + hi + " Hz";
+}
+function ampSection(a) {
+  const cab = h("div", { class: "row" }, h("label", {}, "Baffle"), h("input", { type: "checkbox", checked: a.cabinet, onchange: (e) => { a.cabinet = e.target.checked; schedule(); } }), h("span"));
+  return [h("section", {}, h("h2", {}, "Ampli à tubes"), fieldsFor(schema.amp, a), cab)];
+}
+function fxSection() {
+  const list = state.fx;
+  const items = list.map((e, i) => {
+    const def = schema.fx.find((d) => d.name === e.name);
+    const move = (d) => () => { const j = i + d; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; render(); schedule(); };
+    return h("div", { class: "item" + (e.enabled ? "" : " off") },
+      h("div", { class: "head" },
+        h("input", { type: "checkbox", checked: e.enabled, title: "activer", "aria-label": "activer " + e.name, onchange: (ev) => { e.enabled = ev.target.checked; render(); schedule(); } }),
+        h("span", { class: "grow", title: def.doc }, e.name),
+        h("button", { class: "icon", onclick: move(-1), title: "monter", "aria-label": "monter " + e.name }, "↑"),
+        h("button", { class: "icon", onclick: move(1), title: "descendre", "aria-label": "descendre " + e.name }, "↓"),
+        h("button", { class: "icon", onclick: () => { list.splice(i, 1); render(); schedule(); }, title: "supprimer", "aria-label": "supprimer " + e.name }, "×")),
+      def.params.map((f) => numRow(f, e.params, f.key)));
+  });
+  const pick = h("select", { id: "fx-add", "aria-label": "effet à ajouter" }, schema.fx.map((d) => h("option", { value: d.name }, d.name)));
+  const add = h("button", { onclick: () => {
+    const def = schema.fx.find((d) => d.name === pick.value);
+    const params = {}; def.params.forEach((f) => (params[f.key] = f.def));
+    list.push({ name: def.name, enabled: true, params }); render(); schedule(); } }, "+ ajouter");
+  return h("section", { class: "wide" }, h("h2", {}, "Effets (dans l'ordre, après le profil ou l'ampli)", pick, add),
+    items.length ? h("div", { style: "display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 12px; align-items:start" }, items) : h("p", { class: "muted" }, "Aucun effet."));
+}
+
+// ---------- rendu
+function render() {
+  const kind = $("#kind"), name = $("#name");
+  kind.value = state.kind;
+  const names = state.kind === "profile" ? schema.profiles : state.kind === "amp" ? schema.amps : [];
+  name.replaceChildren(...names.map((n) => h("option", { value: n, selected: n === state.name }, n)));
+  name.hidden = state.kind === "none";
+  $("#intensity-wrap").hidden = state.kind === "none";
+  $("#intensity").value = state.intensity; $("#intensity-out").textContent = fmt(state.intensity);
+  $("#bypass").checked = state.bypass;
+  const main = $("#main");
+  const sections = [];
+  if (state.kind === "profile") sections.push(...profileSections(state.profile));
+  if (state.kind === "amp") sections.push(...ampSection(state.amp));
+  sections.push(fxSection());
+  main.replaceChildren(...sections);
+}
+
+async function loadPreset() {
+  const r = await fetch("/api/preset?kind=" + state.kind + "&name=" + encodeURIComponent(state.name));
+  const j = await r.json();
+  if (!r.ok) { setStatus(j.error, "err"); return false; }
+  state.profile = j.profile; state.amp = j.amp;
+  return true;
+}
+
+async function init() {
+  [schema, state] = await Promise.all([fetch("/api/schema").then((r) => r.json()), fetch("/api/state").then((r) => r.json())]);
+  const I = schema.intensity;
+  const inten = $("#intensity"); inten.min = I.min; inten.max = I.max; inten.step = 0.01;
+  inten.addEventListener("input", () => { state.intensity = +inten.value; $("#intensity-out").textContent = fmt(state.intensity); schedule(); });
+  $("#bypass").addEventListener("change", (e) => { state.bypass = e.target.checked; schedule(); });
+  $("#kind").addEventListener("change", async (e) => {
+    state.kind = e.target.value; state.profile = null; state.amp = null;
+    state.name = state.kind === "profile" ? schema.profiles[0] : state.kind === "amp" ? schema.amps[0] : "";
+    if (state.kind !== "none" && !(await loadPreset())) return;
+    render(); schedule();
+  });
+  $("#name").addEventListener("change", async (e) => { state.name = e.target.value; if (await loadPreset()) { render(); schedule(); } });
+  $("#yaml").addEventListener("click", async () => {
+    if (!sending && !dirty) { /* l'état du serveur est à jour */ } else { await send(); }
+    $("#yaml-text").textContent = await fetch("/api/yaml").then((r) => r.text()); $("#dlg").showModal();
+  });
+  $("#copy").addEventListener("click", async () => { try { await navigator.clipboard.writeText($("#yaml-text").textContent); $("#copy").textContent = "Copié"; } catch (e) { $("#copy").textContent = "Sélectionnez et copiez"; } });
+  $("#close").addEventListener("click", () => { $("#dlg").close(); $("#copy").textContent = "Copier"; });
+  render();
+  setStatus("prêt", "ok");
+}
+init().catch((e) => setStatus("erreur : " + e, "err"));
+</script>
+</body>
+</html>
