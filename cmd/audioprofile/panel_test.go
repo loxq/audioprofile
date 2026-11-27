@@ -14,9 +14,10 @@ import (
 	"time"
 
 	"github.com/loxq/audioprofile"
+	"github.com/loxq/audioprofile/internal/panel"
 )
 
-func newTestPanel(t *testing.T, cfg *config, args pipeline, in []byte) (*panel, *audioprofile.Switcher) {
+func newTestPanel(t *testing.T, cfg *config, args pipeline, in []byte) (*panelBackend, *audioprofile.Switcher) {
 	t.Helper()
 	if args.rate == 0 {
 		args.rate, args.channels, args.intensity = 44100, 2, 1
@@ -26,7 +27,7 @@ func newTestPanel(t *testing.T, cfg *config, args pipeline, in []byte) (*panel, 
 		t.Fatal(err)
 	}
 	sw := audioprofile.NewSwitcher(bytes.NewReader(in), args.rate, args.channels, process)
-	p, err := newPanel(cfg, args, sw)
+	p, err := newPanelBackend(cfg, args, sw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,9 +79,9 @@ func TestSchemaCoversEveryFXParam(t *testing.T) {
 // Les extrémités de chaque curseur sont acceptées par la validation de l'effet (les autres paramètres au défaut),
 // sauf les dépendances entre paramètres qu'un curseur seul ne sait pas respecter.
 func TestSchemaSliderEndsAreValid(t *testing.T) {
-	sc := newPanelSchema(44100, 2, nil)
+	sc := fxSchemas()
 	skip := map[string]bool{"chorus.depth": true, "flanger.depth": true, "chorus.delay": true, "flanger.delay": true, "lofi.lowcut": true, "lofi.highcut": true, "lofi.samplerate": true}
-	for _, fx := range sc.FX {
+	for _, fx := range sc {
 		def := fxByName(fx.Name)
 		for _, f := range fx.Params {
 			if skip[fx.Name+"."+f.Key] {
@@ -108,33 +109,33 @@ func TestPanelAcceptsEveryPresetUnchanged(t *testing.T) {
 	in := pcm(100, 5000, 2)
 	p, _ := newTestPanel(t, &config{}, pipeline{}, in)
 	for _, n := range (&config{}).profileNames() {
-		pp, _, err := p.preset("profile", n)
+		pp, _, err := p.Preset("profile", n)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := p.apply(panelState{Kind: "profile", Name: n, Intensity: 1, Profile: pp, FX: []panelFX{}}); err != nil {
+		if err := p.Apply(panel.State{Kind: "profile", Name: n, Intensity: 1, Profile: pp, FX: []panel.FX{}}); err != nil {
 			t.Errorf("profil %s : %v", n, err)
 		}
 	}
 	for _, n := range (&config{}).ampNames() {
-		_, pa, err := p.preset("amp", n)
+		_, pa, err := p.Preset("amp", n)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := p.apply(panelState{Kind: "amp", Name: n, Intensity: 1, Amp: pa, FX: []panelFX{}}); err != nil {
+		if err := p.Apply(panel.State{Kind: "amp", Name: n, Intensity: 1, Amp: pa, FX: []panel.FX{}}); err != nil {
 			t.Errorf("ampli %s : %v", n, err)
 		}
 	}
 	for _, d := range fxDefs { // chaque effet, avec les valeurs de départ que la page donne
 		params := map[string]float64{}
-		for _, f := range newPanelSchema(44100, 2, nil).FX {
+		for _, f := range fxSchemas() {
 			if f.Name == d.name {
 				for _, q := range f.Params {
 					params[q.Key] = q.Def
 				}
 			}
 		}
-		if err := p.apply(panelState{Kind: "none", Intensity: 1, FX: []panelFX{{Name: d.name, Enabled: true, Params: params}}}); err != nil {
+		if err := p.Apply(panel.State{Kind: "none", Intensity: 1, FX: []panel.FX{{Name: d.name, Enabled: true, Params: params}}}); err != nil {
 			t.Errorf("effet %s avec ses valeurs de départ : %v", d.name, err)
 		}
 	}
@@ -145,7 +146,7 @@ func TestPanelProfileRoundTripKeepsSound(t *testing.T) {
 	in := pcm(200, 20000, 2)
 	for _, p := range audioprofile.Profiles() {
 		orig := p.Settings()
-		back, err := profileToPanel(orig).settings()
+		back, err := panel.ProfileFrom(orig).Settings()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,16 +163,16 @@ func TestPanelProfileRoundTripKeepsSound(t *testing.T) {
 func TestPanelServesPageSchemaAndState(t *testing.T) {
 	in := pcm(100, 5000, 2)
 	p, _ := newTestPanel(t, &config{}, pipeline{profile: "rock", fxSpecs: []string{"delay:time=100"}, rate: 44100, channels: 2, intensity: 1.5}, in)
-	h := p.handler()
+	h := panel.Handler(p)
 	if rec := do(t, h, "GET", "/", "", nil); rec.Code != 200 || !strings.Contains(rec.Body.String(), "<title>") || !strings.Contains(rec.Header().Get("Content-Type"), "text/html") {
 		t.Errorf("page : %d %q", rec.Code, rec.Header().Get("Content-Type"))
 	}
-	var sc panelSchema
+	var sc panel.Schema
 	rec := do(t, h, "GET", "/api/schema", "", nil)
-	if err := json.Unmarshal(rec.Body.Bytes(), &sc); err != nil || len(sc.FX) != len(fxDefs) || len(sc.Profiles) < 17 || sc.Rate != 44100 {
+	if err := json.Unmarshal(rec.Body.Bytes(), &sc); err != nil || len(sc.FX) != len(fxDefs) || len(sc.Profiles) < 17 || sc.Rate != 44100 || sc.Defaults.Compression == nil {
 		t.Errorf("schéma : %v, %d effets, %d profils", err, len(sc.FX), len(sc.Profiles))
 	}
-	var st panelState
+	var st panel.State
 	rec = do(t, h, "GET", "/api/state", "", nil)
 	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
 		t.Fatal(err)
@@ -188,7 +189,7 @@ func TestPanelServesPageSchemaAndState(t *testing.T) {
 func TestPanelPutStateChangesTheSound(t *testing.T) {
 	in := pcm(100, 6*44100, 2)
 	p, sw := newTestPanel(t, &config{}, pipeline{}, in)
-	h := p.handler()
+	h := panel.Handler(p)
 	head := make([]byte, 20*switchBlockBytes)
 	if _, err := io.ReadFull(sw, head); err != nil {
 		t.Fatal(err)
@@ -207,7 +208,7 @@ func TestPanelPutStateChangesTheSound(t *testing.T) {
 	if a := amplitude(rest, 44100, 5*44100-len(head)/4); math.Abs(a-2000) > 150 { // −12 dB sur 8000
 		t.Errorf("amplitude %g après le réglage, attendu ~2000", a)
 	}
-	var st panelState
+	var st panel.State
 	json.Unmarshal(do(t, h, "GET", "/api/state", "", nil).Body.Bytes(), &st)
 	if st.Kind != "profile" || st.Name != "x" || st.Profile.Bands[0].Gain != -12 {
 		t.Errorf("l'état doit retenir le changement : %+v", st)
@@ -219,13 +220,13 @@ const switchBlockBytes = 1024 * 4
 func TestPanelRejectsBadRequests(t *testing.T) {
 	in := pcm(100, 5000, 2)
 	p, _ := newTestPanel(t, &config{}, pipeline{profile: "rock", rate: 44100, channels: 2, intensity: 1}, in)
-	h := p.handler()
-	before := p.current()
-	good := panelState{Kind: "profile", Name: "rock", Intensity: 1, Profile: before.Profile, FX: []panelFX{}}
-	mut := func(f func(*panelState)) string {
+	h := panel.Handler(p)
+	before := p.State()
+	good := panel.State{Kind: "profile", Name: "rock", Intensity: 1, Profile: before.Profile, FX: []panel.FX{}}
+	mut := func(f func(*panel.State)) string {
 		s := good
 		pp := *good.Profile
-		pp.Bands = append([]panelBand(nil), good.Profile.Bands...)
+		pp.Bands = append([]panel.Band(nil), good.Profile.Bands...)
 		s.Profile = &pp
 		f(&s)
 		b, _ := json.Marshal(s)
@@ -235,20 +236,20 @@ func TestPanelRejectsBadRequests(t *testing.T) {
 		body string
 		want string
 	}{
-		"gain hors bornes": {mut(func(s *panelState) { s.Profile.Bands[0].Gain = 99 }), "gain"},
-		"fréquence":        {mut(func(s *panelState) { s.Profile.Bands[0].Freq = 30000 }), "freq"},
-		"type de bande":    {mut(func(s *panelState) { s.Profile.Bands[0].Type = "shelf" }), "shelf"},
-		"intensité":        {mut(func(s *panelState) { s.Intensity = 9 }), "intensity"},
-		"kind":             {mut(func(s *panelState) { s.Kind = "radio" }), "radio"},
-		"sans nom":         {mut(func(s *panelState) { s.Name = " " }), "nom"},
-		"effet inconnu":    {mut(func(s *panelState) { s.FX = []panelFX{{Name: "wah", Enabled: true}} }), "wah"},
-		"param inconnu": {mut(func(s *panelState) {
-			s.FX = []panelFX{{Name: "delay", Enabled: true, Params: map[string]float64{"temps": 1}}}
+		"gain hors bornes": {mut(func(s *panel.State) { s.Profile.Bands[0].Gain = 99 }), "gain"},
+		"fréquence":        {mut(func(s *panel.State) { s.Profile.Bands[0].Freq = 30000 }), "freq"},
+		"type de bande":    {mut(func(s *panel.State) { s.Profile.Bands[0].Type = "shelf" }), "shelf"},
+		"intensité":        {mut(func(s *panel.State) { s.Intensity = 9 }), "intensity"},
+		"kind":             {mut(func(s *panel.State) { s.Kind = "radio" }), "radio"},
+		"sans nom":         {mut(func(s *panel.State) { s.Name = " " }), "nom"},
+		"effet inconnu":    {mut(func(s *panel.State) { s.FX = []panel.FX{{Name: "wah", Enabled: true}} }), "wah"},
+		"param inconnu": {mut(func(s *panel.State) {
+			s.FX = []panel.FX{{Name: "delay", Enabled: true, Params: map[string]float64{"temps": 1}}}
 		}), "temps"},
-		"param hors bornes": {mut(func(s *panelState) {
-			s.FX = []panelFX{{Name: "delay", Enabled: true, Params: map[string]float64{"feedback": 2}}}
+		"param hors bornes": {mut(func(s *panel.State) {
+			s.FX = []panel.FX{{Name: "delay", Enabled: true, Params: map[string]float64{"feedback": 2}}}
 		}), "feedback"},
-		"obligatoire":   {mut(func(s *panelState) { s.FX = []panelFX{{Name: "hpf", Enabled: true}} }), "freq"},
+		"obligatoire":   {mut(func(s *panel.State) { s.FX = []panel.FX{{Name: "hpf", Enabled: true}} }), "freq"},
 		"champ inconnu": {`{"kind":"none","intensity":1,"fx":[],"bogus":1}`, "bogus"},
 		"json cassé":    {`{`, ""},
 	} {
@@ -257,7 +258,7 @@ func TestPanelRejectsBadRequests(t *testing.T) {
 			t.Errorf("%s : %d %s", name, rec.Code, rec.Body)
 		}
 	}
-	if !reflect.DeepEqual(p.current(), before) {
+	if !reflect.DeepEqual(p.State(), before) {
 		t.Error("un état refusé ne doit rien changer")
 	}
 	if rec := do(t, h, "PUT", "/api/state", "{}", map[string]string{"Content-Type": "text/plain"}); rec.Code != http.StatusUnsupportedMediaType {
@@ -265,47 +266,14 @@ func TestPanelRejectsBadRequests(t *testing.T) {
 	}
 }
 
-func TestPanelRefusesForeignOriginAndHost(t *testing.T) {
-	in := pcm(100, 5000, 2)
-	p, _ := newTestPanel(t, &config{}, pipeline{}, in)
-	h := p.handler()
-	body := `{"kind":"none","intensity":1,"fx":[]}`
-	if rec := do(t, h, "PUT", "/api/state", body, map[string]string{"Origin": "http://evil.example"}); rec.Code != 403 {
-		t.Errorf("origine étrangère : %d", rec.Code)
-	}
-	if rec := do(t, h, "PUT", "/api/state", body, map[string]string{"Origin": "http://example.com"}); rec.Code != 200 { // httptest : Host = example.com
-		t.Errorf("même origine : %d", rec.Code)
-	}
-	p.allow = loopbackHost // rebond DNS : un nom étranger qui pointe vers 127.0.0.1
-	if rec := do(t, h, "GET", "/api/state", "", nil); rec.Code != 403 {
-		t.Errorf("hôte étranger : %d", rec.Code)
-	}
-	req := httptest.NewRequest("GET", "http://127.0.0.1:8080/api/state", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Errorf("bouclage : %d", rec.Code)
-	}
-	for _, host := range []string{"localhost:8080", "[::1]:9", "127.0.0.1"} {
-		if !loopbackHost(host) {
-			t.Errorf("%s doit être accepté", host)
-		}
-	}
-	for _, host := range []string{"evil.example:8080", "192.168.1.5:8080", ""} {
-		if loopbackHost(host) {
-			t.Errorf("%s doit être refusé", host)
-		}
-	}
-}
-
 func TestPanelPresetAndYAML(t *testing.T) {
 	in := pcm(100, 5000, 2)
 	cfg := parseCfg(t, "profiles:\n  rock:\n    compression: {ratio: 6}\n")
 	p, _ := newTestPanel(t, cfg, pipeline{profile: "rock", rate: 44100, channels: 2, intensity: 1}, in)
-	h := p.handler()
+	h := panel.Handler(p)
 	var pr struct {
-		Profile *panelProfile `json:"profile"`
-		Amp     *panelAmp     `json:"amp"`
+		Profile *panel.Profile `json:"profile"`
+		Amp     *panel.Amp     `json:"amp"`
 	}
 	json.Unmarshal(do(t, h, "GET", "/api/preset?kind=profile&name=rock", "", nil).Body.Bytes(), &pr)
 	if pr.Profile == nil || pr.Profile.Compression.Ratio != 6 {
@@ -320,16 +288,16 @@ func TestPanelPresetAndYAML(t *testing.T) {
 	}
 
 	// exporter : le YAML se relit en les mêmes réglages, et la ligne de commande est donnée
-	st := p.current()
+	st := p.State()
 	st.Profile.Bands[0].Gain = 4.5
-	st.FX = []panelFX{{Name: "lpf", Enabled: true, Params: map[string]float64{"freq": 9000, "order": 2}}}
-	if err := p.apply(st); err != nil {
+	st.FX = []panel.FX{{Name: "lpf", Enabled: true, Params: map[string]float64{"freq": 9000, "order": 2}}}
+	if err := p.Apply(st); err != nil {
 		t.Fatal(err)
 	}
 	out := do(t, h, "GET", "/api/yaml", "", nil).Body.String()
 	c := parseCfg(t, out)
 	got, _ := c.profile("rock")
-	want, _ := st.Profile.settings()
+	want, _ := st.Profile.Settings()
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("le YAML exporté ne redonne pas les réglages :\n%s", out)
 	}
@@ -359,14 +327,14 @@ func TestCLIServeEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var st panelState
+	var st panel.State
 	json.NewDecoder(resp.Body).Decode(&st)
 	resp.Body.Close()
 	if st.Kind != "profile" || st.Name != "flat" {
 		t.Fatalf("état : %+v", st)
 	}
 	st.Kind, st.Name = "profile", "doux"
-	st.Profile.Bands = []panelBand{{Type: "gain", Gain: -12}}
+	st.Profile.Bands = []panel.Band{{Type: "gain", Gain: -12}}
 	b, _ := json.Marshal(st)
 	req, _ := http.NewRequest("PUT", url+"api/state", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
@@ -412,5 +380,12 @@ func TestCLIServeFlagErrors(t *testing.T) {
 	}
 	if _, _, err := runCLI(t, in, "-serve", "256.256.256.256:1", "-profile", "rock"); err == nil || !strings.Contains(err.Error(), "-serve") {
 		t.Errorf("adresse invalide : %v", err)
+	}
+}
+
+// Les valeurs de départ d'un compresseur activé depuis la page sont celles du fichier de configuration.
+func TestPanelDefaultsMatchConfigStart(t *testing.T) {
+	if got, want := panel.NewSchema(44100, 2).Defaults.Compression.Settings(), compressorStart; got != want {
+		t.Errorf("compresseur de départ de la page %+v, celui de la config %+v", got, want)
 	}
 }

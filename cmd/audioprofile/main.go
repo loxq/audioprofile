@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/loxq/audioprofile"
+	"github.com/loxq/audioprofile/internal/panel"
 )
 
 func main() {
@@ -260,13 +261,13 @@ Options :
 				return err
 			}
 		} else {
-			pn, err := newPanel(cfg, pl, sw)
+			pn, err := newPanelBackend(cfg, pl, sw)
 			if err != nil {
 				return err
 			}
-			url, stopServe, err := servePanel(*serve, pn)
+			url, stopServe, err := panel.Serve(*serve, pn)
 			if err != nil {
-				return err
+				return fmt.Errorf("-serve : %w", err)
 			}
 			fmt.Fprintf(stderr, "panneau de réglage : %s\n", url)
 			stopWatch = stopServe

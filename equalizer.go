@@ -3,6 +3,7 @@ package audioprofile
 import (
 	"io"
 	"math"
+	"strings"
 )
 
 const (
@@ -27,6 +28,37 @@ const (
 	LowPass                   // passe-bas de Butterworth : coupe au-dessus de FreqHz (GainDB ignoré ; voir Order)
 	Notch                     // coupe-bande étroit centré sur FreqHz, par exemple un ronflement à 50 Hz (GainDB ignoré ; Q <= 0 → 10)
 )
+
+var bandTypeNames = [...]string{LowShelf: "lowshelf", Peaking: "peaking", HighShelf: "highshelf", Gain: "gain", HighPass: "highpass", LowPass: "lowpass", Notch: "notch"}
+
+// BandTypes renvoie tous les types de bande, dans l'ordre de leurs constantes.
+func BandTypes() []BandType {
+	ts := make([]BandType, len(bandTypeNames))
+	for i := range ts {
+		ts[i] = BandType(i)
+	}
+	return ts
+}
+
+// String renvoie le nom du type ("lowshelf", "peaking", "highshelf", "gain", "highpass", "lowpass", "notch"),
+// ou "unknown".
+func (t BandType) String() string {
+	if t < 0 || int(t) >= len(bandTypeNames) {
+		return "unknown"
+	}
+	return bandTypeNames[t]
+}
+
+// ParseBandType retrouve un type de bande par son nom (insensible à la casse et aux espaces).
+func ParseBandType(name string) (BandType, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for i, n := range bandTypeNames {
+		if n == name {
+			return BandType(i), true
+		}
+	}
+	return LowShelf, false
+}
 
 // Band décrit une bande d'un égaliseur paramétrique.
 type Band struct {

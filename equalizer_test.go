@@ -112,3 +112,21 @@ func TestEqualizerStereoOddChunks(t *testing.T) {
 		t.Error("la lecture fragmentée doit donner le même résultat")
 	}
 }
+
+func TestBandTypeNames(t *testing.T) {
+	for _, bt := range BandTypes() {
+		got, ok := ParseBandType(bt.String())
+		if !ok || got != bt {
+			t.Errorf("ParseBandType(%q) = %v, %v", bt.String(), got, ok)
+		}
+	}
+	if len(BandTypes()) != 7 || BandType(99).String() != "unknown" || BandType(-1).String() != "unknown" {
+		t.Error("BandTypes ou String hors bornes")
+	}
+	if bt, ok := ParseBandType("  HighShelf "); !ok || bt != HighShelf {
+		t.Error("ParseBandType doit ignorer casse et espaces")
+	}
+	if _, ok := ParseBandType("shelf"); ok {
+		t.Error("un nom inconnu ne doit pas être reconnu")
+	}
+}

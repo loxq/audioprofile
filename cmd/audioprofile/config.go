@@ -90,18 +90,14 @@ type ampConfig struct {
 	Output  *float64 `yaml:"output,omitempty"`
 }
 
-var bandTypeNames = map[string]audioprofile.BandType{
-	"lowshelf": audioprofile.LowShelf, "peaking": audioprofile.Peaking, "highshelf": audioprofile.HighShelf,
-	"gain": audioprofile.Gain, "highpass": audioprofile.HighPass, "lowpass": audioprofile.LowPass, "notch": audioprofile.Notch,
-}
-
-func bandTypeName(t audioprofile.BandType) string {
-	for n, v := range bandTypeNames {
-		if v == t {
-			return n
-		}
+// bandTypeList liste les types de bande, triés, pour les messages d'erreur.
+func bandTypeList() string {
+	var names []string
+	for _, t := range audioprofile.BandTypes() {
+		names = append(names, t.String())
 	}
-	return fmt.Sprintf("%d", int(t))
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // ---------------------------------------------------------------- configuration résolue
@@ -282,9 +278,9 @@ func (pc *profileConfig) resolve(name string) (audioprofile.ProfileSettings, err
 	if pc.Bands != nil {
 		s.Bands = nil
 		for i, b := range *pc.Bands {
-			t, ok := bandTypeNames[strings.ToLower(b.Type)]
+			t, ok := audioprofile.ParseBandType(b.Type)
 			if !ok {
-				return s, fmt.Errorf("bands[%d] : type %q inconnu (types : %s)", i, b.Type, strings.Join(sortedKeys(bandTypeNames), ", "))
+				return s, fmt.Errorf("bands[%d] : type %q inconnu (types : %s)", i, b.Type, bandTypeList())
 			}
 			s.Bands = append(s.Bands, audioprofile.Band{Type: t, FreqHz: b.Freq, GainDB: b.Gain, Q: b.Q, Order: b.Order})
 		}
@@ -493,7 +489,7 @@ func validateProfile(s audioprofile.ProfileSettings, rate int) error {
 			return fmt.Errorf("bands[%d] : gain doit être dans [-24, 24] dB (reçu %g)", i, b.GainDB)
 		}
 		if b.Type != audioprofile.Gain && (b.FreqHz <= 0 || b.FreqHz >= nyq) {
-			return fmt.Errorf("bands[%d] (%s) : freq doit être dans ]0, %g[ Hz (reçu %g)", i, bandTypeName(b.Type), nyq, b.FreqHz)
+			return fmt.Errorf("bands[%d] (%s) : freq doit être dans ]0, %g[ Hz (reçu %g)", i, b.Type.String(), nyq, b.FreqHz)
 		}
 		if b.Q < 0 || b.Order < 0 || b.Order > 8 {
 			return fmt.Errorf("bands[%d] : q doit être >= 0 et order dans [0, 8]", i)
@@ -579,7 +575,7 @@ func profileToConfig(name string, s audioprofile.ProfileSettings) *profileConfig
 	if len(s.Bands) > 0 || len(base.Bands) > 0 {
 		bands := make([]bandConfig, 0, len(s.Bands))
 		for _, b := range s.Bands {
-			bands = append(bands, bandConfig{Type: bandTypeName(b.Type), Freq: b.FreqHz, Gain: b.GainDB, Q: b.Q, Order: b.Order})
+			bands = append(bands, bandConfig{Type: b.Type.String(), Freq: b.FreqHz, Gain: b.GainDB, Q: b.Q, Order: b.Order})
 		}
 		pc.Bands = &bands
 	}
