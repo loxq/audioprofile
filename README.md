@@ -137,6 +137,7 @@ docs/              la documentation détaillée
 | [La commande](docs/cli.md) | toutes les options de `audioprofile` |
 | [Régler en direct](docs/reglage.md) | fichier de réglages, rechargement à chaud, panneau web |
 | [Dans un programme de streaming](docs/streaming.md) | les paquets, le `Switcher`, brancher le tout, la production |
+| [Référence Go](https://pkg.go.dev/github.com/loxq/audioprofile) | la documentation des paquets et leurs exemples exécutables (`go doc`, pkg.go.dev) |
 | [Limites connues](docs/limites.md) | ce qui n'est pas fait, ce qui n'a pas été validé à l'oreille |
 | [Tests](docs/tests.md) | ce que chaque test vérifie |
 

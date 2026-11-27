@@ -1,6 +1,3 @@
-// Package audioprofile applique des filtres d'égalisation (basses, médiums,
-// aigus, ou égaliseur paramétrique complet) sur un flux PCM 16 bits signé
-// little-endian, entrelacé.
 package audioprofile
 
 import "io"

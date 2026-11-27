@@ -101,7 +101,7 @@ type LimiterSettings struct {
 func Limiter(src io.Reader, sampleRate, channels int, s LimiterSettings) io.Reader
 ```
 
-Limiteur de crête **à anticipation** : aucune crête d'échantillon ne dépasse `CeilingDB`. Le gain nécessaire pour chaque trame est calculé `LookaheadMs` plus tôt et la réduction est étalée en rampe sur cette durée, de sorte qu'elle est déjà complète quand le pic arrive. Le compresseur, lui, laisse passer un pic bref pendant son temps d'attaque ; le limiteur ne le laisse jamais passer, et sans la distorsion d'un écrêtage.
+Limiteur de crête **à anticipation** : aucune crête d'échantillon ne dépasse `CeilingDB` (à une demi-valeur d'échantillon près : le signal est arrondi à l'entier). Le gain nécessaire pour chaque trame est calculé `LookaheadMs` plus tôt et la réduction est étalée en rampe sur cette durée, de sorte qu'elle est déjà complète quand le pic arrive. Le compresseur, lui, laisse passer un pic bref pendant son temps d'attaque ; le limiteur ne le laisse jamais passer, et sans la distorsion d'un écrêtage.
 
 - **Aucune latence visible** : le signal est retardé de l'anticipation en interne, mais la sortie est recalée : même longueur et même alignement que l'entrée (le tampon est vidé en fin de flux).
 - **Transparent sous le plafond** : tant qu'aucune crête ne dépasse, le signal ressort **bit à bit identique**.
